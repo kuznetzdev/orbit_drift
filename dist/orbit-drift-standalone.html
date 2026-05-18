@@ -55,8 +55,8 @@
 </style>
 </head>
 <body>
-  <canvas id="game" aria-label="Orbit Drift game canvas"></canvas>
-  <div class="hint">Короткие импульсы двигателем. Остальное сделает гравитация. Колесо/pinch: масштаб · R цель · G поле · N навигация · M звук.</div>
+  <canvas id="game" aria-label="Игровое поле Orbit Drift"></canvas>
+  <div class="hint">Короткие импульсы двигателем, дальше ведёт гравитация. Колесо мыши или жест двумя пальцами меняют масштаб · R смена цели · G поле гравитации · N навигация · M звук.</div>
   <noscript>Для запуска Orbit Drift нужен JavaScript.</noscript>
 
   <!--
@@ -94,24 +94,57 @@ const SETTINGS_KEY = 'orbit-drift-settings-v11';
 const DIFFICULTIES = [
   {
     id: 'ZEN', name: 'ZEN', label: 'Легко', title: 'мягкий старт',
-    note: 'цели ближе · топлива больше · ошибки легче исправить',
+    note: 'цели ближе · больше топлива · ошибки легче исправить',
+    riskText: 'низкий риск', rewardText: 'щедрые возвраты',
     gravity: .92, thrust: 1.06, brake: 1.04, targetMin: .76, targetMax: .88,
     fuelRegen: 1.18, heatRisk: .68, stressRisk: .72, maxSpeed: .90, scanEase: 1.18,
-    routeRisk: .62, bodyRange: .94
+    routeRisk: .62, bodyRange: .94,
+    autoAimMs: 5600,
+    autoAlignK: .034,
+    predictionStepsMul: 1.28,
+    routeOptionsCount: 5,
+    scanMinSpeed: 64,
+    perfectQuality: .70,
+    partialObjectiveFactor: .56,
+    rewardFuelMul: 1.28,
+    rewardHeatReliefMul: 1.24,
+    rewardStressReliefMul: 1.22
   },
   {
     id: 'FLOW', name: 'FLOW', label: 'Нормально', title: 'лучший баланс',
     note: 'поле заметное · цели дальше · нужна точность',
+    riskText: 'средний риск', rewardText: 'честные награды',
     gravity: 1.12, thrust: .94, brake: .95, targetMin: .96, targetMax: 1.03,
     fuelRegen: 1.00, heatRisk: .94, stressRisk: .96, maxSpeed: 1.0, scanEase: 1.0,
-    routeRisk: 1.0, bodyRange: 1.0
+    routeRisk: 1.0, bodyRange: 1.0,
+    autoAimMs: 4500,
+    autoAlignK: .020,
+    predictionStepsMul: 1.0,
+    routeOptionsCount: 3,
+    scanMinSpeed: 78,
+    perfectQuality: .76,
+    partialObjectiveFactor: .30,
+    rewardFuelMul: 1.0,
+    rewardHeatReliefMul: 1.0,
+    rewardStressReliefMul: 1.0
   },
   {
     id: 'DEEP', name: 'DEEP', label: 'Сложно', title: 'сильная гравитация',
-    note: 'дальние цели · слабее тяга · меньше права на ошибку',
+    note: 'дальние цели · тяга слабее · меньше права на ошибку',
+    riskText: 'высокий риск', rewardText: 'меньше запаса',
     gravity: 1.38, thrust: .78, brake: .84, targetMin: 1.13, targetMax: 1.22,
     fuelRegen: .86, heatRisk: 1.16, stressRisk: 1.20, maxSpeed: 1.08, scanEase: .88,
-    routeRisk: 1.32, bodyRange: 1.12
+    routeRisk: 1.32, bodyRange: 1.12,
+    autoAimMs: 2900,
+    autoAlignK: .009,
+    predictionStepsMul: .72,
+    routeOptionsCount: 2,
+    scanMinSpeed: 92,
+    perfectQuality: .84,
+    partialObjectiveFactor: .14,
+    rewardFuelMul: .78,
+    rewardHeatReliefMul: .82,
+    rewardStressReliefMul: .80
   }
 ];
 
@@ -130,9 +163,17 @@ function writeSettings() {
 const initialSettings = readSettings();
 let difficultyIndex = Math.max(0, Math.min(DIFFICULTIES.length - 1, Number(initialSettings.difficultyIndex ?? 1)));
 let difficulty = DIFFICULTIES[difficultyIndex];
+const DEFAULT_DIFFICULTY = DIFFICULTIES[1];
 let soundOn = initialSettings.soundOn !== false;
 let userZoom = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, Number(initialSettings.userZoom || 1)));
 const TOUCH_CAPABLE = ('ontouchstart' in window) || (navigator.maxTouchPoints || 0) > 0;
+
+function difficultyNumber(key, fallback = 1) {
+  const value = Number(difficulty && difficulty[key]);
+  if (Number.isFinite(value)) return value;
+  const normalValue = Number(DEFAULT_DIFFICULTY && DEFAULT_DIFFICULTY[key]);
+  return Number.isFinite(normalValue) ? normalValue : fallback;
+}
 
 function readBest() {
   try { return Number(localStorage.getItem(STORAGE_KEY) || 0); }
@@ -179,6 +220,9 @@ let gravityAdvice = '';
 let gravityAdviceTime = 0;
 let flowAwardLevel = 0;
 let visitedNodes = new Set();
+let tutorialHint = '';
+let tutorialHintTime = 0;
+let tutorialStage = 0;
 let gravityFieldCache = { frame: -999, camX: NaN, camY: NaN, zoom: NaN, width: 0, height: 0, lines: [] };
 let predictionCache = { frame: -999, x: NaN, y: NaN, vx: NaN, vy: NaN, points: [] };
 let perf = { frameMs: 16, fps: 60, bodies: 0, gravSources: 0, fieldLines: 0 };
@@ -242,6 +286,27 @@ function mulberry32(a) {
   };
 }
 
+function valueNoise01(x, y, freq = .1) {
+  const sx = x * freq;
+  const sy = y * freq;
+  const ix = Math.floor(sx);
+  const iy = Math.floor(sy);
+  const fx = smoothstep(0, 1, sx - ix);
+  const fy = smoothstep(0, 1, sy - iy);
+  const n00 = hash2(ix, iy) / 4294967295;
+  const n10 = hash2(ix + 1, iy) / 4294967295;
+  const n01 = hash2(ix, iy + 1) / 4294967295;
+  const n11 = hash2(ix + 1, iy + 1) / 4294967295;
+  return lerp(lerp(n00, n10, fx), lerp(n01, n11, fx), fy);
+}
+
+function stellarEnvironmentBias(cx, cy) {
+  const broad = valueNoise01(cx + 193.17, cy - 91.43, .095);
+  const medium = valueNoise01(cx * 1.9 - 54.2, cy * 1.9 + 28.8, .17);
+  const fine = valueNoise01(cx * 4.2 + 17.5, cy * 4.2 - 31.9, .13);
+  return clamp((broad - .5) * 1.3 + (medium - .5) * .55 + (fine - .5) * .25, -1, 1);
+}
+
 function chooseWeighted(items, rng) {
   const total = items.reduce((s, it) => s + it.w, 0);
   let roll = rng() * total;
@@ -252,22 +317,33 @@ function chooseWeighted(items, rng) {
   return items[items.length - 1].v;
 }
 
-function chooseMainClass(rng, depth = 0) {
+function chooseMainClass(rng, depth = 0, envBias = 0) {
+  const bias = clamp(envBias, -1, 1);
+  const classHeat = { M: -3, K: -2, G: -1, F: 1, A: 2, B: 3, O: 4 };
   let weights = Object.keys(MAIN_SEQUENCE).map(k => ({ v: k, w: MAIN_SEQUENCE[k].rarity }));
   if (depth < 5 || score < 22) {
     weights = weights.map(it => ({ v: it.v, w: (it.v === 'O' || it.v === 'B') ? it.w * .18 : it.w }));
   }
   if (score < 12) weights = weights.map(it => ({ v: it.v, w: it.v === 'O' ? 0 : (it.v === 'B' ? it.w * .2 : it.w) }));
+  weights = weights.map(it => {
+    const rank = classHeat[it.v] || 0;
+    const shift = rank * bias;
+    const mul = shift >= 0 ? (1 + shift * .20) : (1 / (1 + Math.abs(shift) * .18));
+    return { v: it.v, w: Math.max(0, it.w * mul) };
+  });
   return chooseWeighted(weights, rng);
 }
 
-function chooseStellarProfile(rng, depth = 0) {
+function chooseStellarProfile(rng, depth = 0, envBias = 0) {
+  const bias = clamp(envBias, -1, 1);
+  const hot = Math.max(0, bias);
+  const cold = Math.max(0, -bias);
   const specials = [];
-  specials.push({ v: { family: 'main', class: chooseMainClass(rng, depth) }, w: 92 });
-  specials.push({ v: { family: 'brown', class: 'BD' }, w: score > 6 ? 4.8 : 2.5 });
-  specials.push({ v: { family: 'redgiant', class: 'RG' }, w: score > 12 ? 2.8 : .5 });
-  specials.push({ v: { family: 'whitedwarf', class: 'WD' }, w: score > 16 ? 2.2 : .2 });
-  specials.push({ v: { family: 'neutron', class: 'NS' }, w: score > 32 ? .45 : 0 });
+  specials.push({ v: { family: 'main', class: chooseMainClass(rng, depth, bias) }, w: 92 * (1 - Math.abs(bias) * .12) });
+  specials.push({ v: { family: 'brown', class: 'BD' }, w: (score > 6 ? 4.8 : 2.5) * (1 + cold * .62 - hot * .20) });
+  specials.push({ v: { family: 'redgiant', class: 'RG' }, w: (score > 12 ? 2.8 : .5) * (1 + hot * .34) });
+  specials.push({ v: { family: 'whitedwarf', class: 'WD' }, w: (score > 16 ? 2.2 : .2) * (1 + hot * .26) });
+  specials.push({ v: { family: 'neutron', class: 'NS' }, w: (score > 32 ? .45 : 0) * (1 + hot * .48) });
   return chooseWeighted(specials, rng);
 }
 
@@ -449,6 +525,114 @@ function soundCue(name, body = null, amount = 1) {
 
 'use strict';
 
+function orbitSpeedAround(parentMu, orbitA, rng, minMul = .96, maxMul = 1.04) {
+  if (!parentMu || !orbitA) return 0;
+  const base = Math.sqrt(parentMu / Math.max(orbitA * orbitA * orbitA, 1));
+  const dir = rng() < .5 ? -1 : 1;
+  return base * rnd(rng, minMul, maxMul) * dir;
+}
+
+function localEccentricityCap(orbitA, innerOrbit, outerOrbit, hardCap = .16) {
+  const innerGap = Math.max(40, orbitA - (innerOrbit || (orbitA - 220)));
+  const outerGap = Math.max(40, (outerOrbit || (orbitA + innerGap)) - orbitA);
+  const localGap = Math.min(innerGap, outerGap);
+  const capFromGap = clamp((localGap / Math.max(orbitA, 1)) * .46, .012, hardCap);
+  return capFromGap;
+}
+
+function sTypeStabilityLimit(hostMass, companionMass, binaryA, binaryE) {
+  if (!hostMass || !companionMass || !binaryA) return Infinity;
+  const mu = companionMass / Math.max(hostMass + companionMass, .000001);
+  const e = clamp(binaryE || 0, 0, .8);
+  const ratio = clamp(
+    0.464 - 0.380 * mu - 0.631 * e + 0.586 * mu * e + 0.150 * e * e - 0.198 * mu * e * e,
+    0.08,
+    0.58
+  );
+  return binaryA * ratio;
+}
+
+function stableOrbitCeiling(star, companion) {
+  if (!companion) return Infinity;
+  return sTypeStabilityLimit(star.mass, companion.mass, companion.orbitA, companion.orbitE) * .97;
+}
+
+function systemBaseOrbit(star) {
+  return star.scan + (star.family === 'redgiant' ? 280 : 150);
+}
+
+function buildPlanetOrbitPlan(star, rng, planetCount, extreme = false) {
+  const baseOrbit = systemBaseOrbit(star);
+  const plan = [];
+  const brown = star.family === 'brown';
+  let orbitA = baseOrbit + rnd(rng, extreme ? 18 : 24, extreme ? 220 : 180);
+  for (let i = 0; i < planetCount; i++) {
+    if (i > 0) {
+      const minStep = brown ? 120 : 165;
+      const maxStep = brown ? 220 : 310;
+      orbitA += rnd(rng, minStep * (extreme ? .78 : 1), maxStep * (extreme ? 1.38 : 1));
+    }
+    plan.push(orbitA);
+  }
+  return { baseOrbit, plan };
+}
+
+function stablePlanetOrbits(star, companion, orbitPlan) {
+  const stableMaxOrbit = stableOrbitCeiling(star, companion);
+  const usable = [];
+  for (const orbit of orbitPlan) {
+    if (star.heatRadius > 0 && orbit < star.heatRadius * .45 && star.luminosity > 50) continue;
+    if (orbit > stableMaxOrbit) continue;
+    usable.push(orbit);
+  }
+  return usable;
+}
+
+function addPlanetsOnOrbits(star, orbits, baseOrbit, rng, extreme = false) {
+  const planets = [];
+  for (let i = 0; i < orbits.length; i++) {
+    const orbit = orbits[i];
+    const inner = i > 0 ? orbits[i - 1] : Math.min(baseOrbit, orbit - 80);
+    const outer = i + 1 < orbits.length ? orbits[i + 1] : orbit + (orbit - inner);
+    const hardCap = star.family === 'redgiant' ? .18 : (extreme ? .17 : .13);
+    const eCap = localEccentricityCap(orbit, inner, outer, hardCap);
+    planets.push(addPlanet(star, orbit, rng() * TAU, rng, false, { maxEcc: eCap }));
+  }
+  return planets;
+}
+
+function populateSystemBodies(star, companion, rng, options = {}) {
+  const canHavePlanets = star.family !== 'neutron' && star.family !== 'whitedwarf';
+  const extreme = options.extreme ?? (rng() < .035 && star.family === 'main');
+  const maxPlanets = options.maxPlanets || (star.family === 'brown' ? 3 : (extreme ? 6 : 5));
+  const minPlanets = options.minPlanets || (canHavePlanets ? 1 : 0);
+  const rawCount = canHavePlanets
+    ? minPlanets + Math.floor(rng() * Math.max(1, maxPlanets - minPlanets + 1))
+    : Math.floor(rng() * 2);
+  const { baseOrbit, plan } = buildPlanetOrbitPlan(star, rng, rawCount, extreme);
+  const usableOrbits = stablePlanetOrbits(star, companion, plan);
+  if (!usableOrbits.length && companion && canHavePlanets) {
+    const compactMin = star.scan + 70;
+    const compactMax = stableOrbitCeiling(star, companion) * .92;
+    if (compactMax > compactMin) usableOrbits.push(rnd(rng, compactMin, compactMax));
+  }
+  const planets = addPlanetsOnOrbits(star, usableOrbits, baseOrbit, rng, extreme);
+  const outerAnchor = usableOrbits.length ? usableOrbits[usableOrbits.length - 1] : (baseOrbit + rnd(rng, 220, 420));
+
+  if ((options.allowBelts !== false) && rng() < (extreme ? .58 : .45) && star.family !== 'neutron') {
+    const beltR = outerAnchor + rnd(rng, 120, extreme ? 420 : 300);
+    const n = 3 + Math.floor(rng() * (extreme ? 11 : 8));
+    for (let i = 0; i < n; i++) addAsteroid(star, beltR + rnd(rng, -72, 82), rng() * TAU, rng);
+  }
+  if ((options.allowComets !== false) && rng() < (extreme ? .24 : .18) && star.family === 'main') {
+    const n = rng() < (extreme ? .48 : .35) ? 2 : 1;
+    const cometMin = Math.max(outerAnchor + 260, 760);
+    const cometMax = Math.max(cometMin + 260, outerAnchor + (extreme ? 1320 : 960));
+    for (let i = 0; i < n; i++) addComet(star, rnd(rng, cometMin, cometMax), rng() * TAU, rng);
+  }
+  return { planets, outerAnchor, extreme };
+}
+
 function starStats(profile, rng) {
   if (profile.family === 'main') {
     const d = MAIN_SEQUENCE[profile.class];
@@ -541,14 +725,23 @@ function addCompanionStar(parent, profile, orbitR, angle, rng) {
   const comp = addStar(profile, parent.x + Math.cos(angle) * orbitR, parent.y + Math.sin(angle) * orbitR, rng);
   comp.parentId = parent.id;
   comp.orbitA = orbitR;
-  comp.orbitE = rnd(rng, .015, .18);
+  comp.orbitE = rnd(rng, .02, .16);
   comp.orbitArg = rng() * TAU;
   comp.orbitAngle = angle;
-  comp.orbitSpeed = Math.sqrt((parent.mu + comp.mu) / Math.max(orbitR * orbitR * orbitR, 1)) * rnd(rng, .72, 1.06) * (rng() < .5 ? -1 : 1);
+  comp.orbitSpeed = orbitSpeedAround(parent.mu + comp.mu, orbitR, rng, .965, 1.035);
   comp.label = (comp.label || comp.class || 'ST') + '·B';
   comp.scan *= .88;
   comp.field = Math.min(comp.field, Math.max(2600, orbitR * 3.25));
   comp.binary = true;
+  parent.binary = true;
+  parent.binaryCompanionId = comp.id;
+  parent.binaryOrbitA = orbitR;
+  parent.binaryOrbitE = comp.orbitE;
+  parent.binaryCompanionMass = comp.mass;
+  comp.binaryPrimaryId = parent.id;
+  comp.binaryOrbitA = orbitR;
+  comp.binaryOrbitE = comp.orbitE;
+  comp.binaryCompanionMass = parent.mass;
   return comp;
 }
 
@@ -563,12 +756,16 @@ function choosePlanetType(rng, parent) {
   return chooseWeighted(pool, rng);
 }
 
-function addPlanet(parent, orbitR, angle, rng, home = false) {
+function addPlanet(parent, orbitR, angle, rng, home = false, orbitTuning = null) {
   const t = home ? PLANET_TYPES[3] : choosePlanetType(rng, parent);
   const mass = rnd(rng, t.mass[0], t.mass[1]) * (home ? 1.25 : 1);
   const radius = rnd(rng, t.radius[0], t.radius[1]) * (home ? 1.12 : 1);
   const hue = rnd(rng, t.hue[0], t.hue[1]);
-  const e = home ? .02 : rnd(rng, 0, parent && parent.family === 'redgiant' ? .20 : .12);
+  const defaultEmax = parent && parent.family === 'redgiant' ? .20 : .12;
+  const tunedEmax = orbitTuning && Number.isFinite(orbitTuning.maxEcc)
+    ? clamp(orbitTuning.maxEcc, .01, defaultEmax)
+    : defaultEmax;
+  const e = home ? .02 : rnd(rng, 0, tunedEmax);
   const arg = rng() * TAU;
   const mu = G * mass;
   const body = {
@@ -602,7 +799,7 @@ function addPlanet(parent, orbitR, angle, rng, home = false) {
     orbitE: e,
     orbitArg: arg,
     orbitAngle: angle,
-    orbitSpeed: parent ? Math.sqrt(parent.mu / Math.max(orbitR * orbitR * orbitR, 1)) * rnd(rng, .82, 1.08) * (rng() < .5 ? -1 : 1) : 0,
+    orbitSpeed: parent ? orbitSpeedAround(parent.mu, orbitR, rng, .96, 1.045) : 0,
     soi: parent ? clamp(orbitR * Math.pow(mass / Math.max(parent.mass * 3, .001), 1 / 3) * 5.8, radius * 14.0, 3600) : 2400,
     ring: rng() < t.ring || home,
     scanCooldown: 0,
@@ -642,10 +839,10 @@ function addAsteroid(parent, orbitR, angle, rng) {
     sides: 5 + Math.floor(rng() * 4),
     parentId: parent ? parent.id : 0,
     orbitA: parent ? orbitR : 0,
-    orbitE: rnd(rng, .02, .22),
+    orbitE: rnd(rng, .02, .14),
     orbitArg: rng() * TAU,
     orbitAngle: angle,
-    orbitSpeed: parent ? Math.sqrt(parent.mu / Math.max(orbitR * orbitR * orbitR, 1)) * rnd(rng, .9, 1.3) * (rng() < .5 ? -1 : 1) : 0,
+    orbitSpeed: parent ? orbitSpeedAround(parent.mu, orbitR, rng, .95, 1.08) : 0,
     soi: parent ? clamp(orbitR * Math.pow(mass / Math.max(parent.mass * 3, .001), 1 / 3) * 3.1, r * 7.5, 620) : 430,
     scanCooldown: 0,
     gravitates: true
@@ -681,10 +878,10 @@ function addComet(parent, orbitA, angle, rng) {
     spin: rnd(rng, -.5, .5),
     parentId: parent ? parent.id : 0,
     orbitA,
-    orbitE: rnd(rng, .48, .78),
+    orbitE: rnd(rng, .46, .72),
     orbitArg: rng() * TAU,
     orbitAngle: angle,
-    orbitSpeed: parent ? Math.sqrt(parent.mu / Math.max(orbitA * orbitA * orbitA, 1)) * rnd(rng, .65, 1.12) * (rng() < .5 ? -1 : 1) : 0,
+    orbitSpeed: parent ? orbitSpeedAround(parent.mu, orbitA, rng, .92, 1.08) : 0,
     soi: parent ? clamp(orbitA * Math.pow(mass / Math.max(parent.mass * 3, .001), 1 / 3) * 3.0, 96, 680) : 460,
     scanCooldown: 0,
     gravitates: true
@@ -750,28 +947,20 @@ function ensureChunk(cx, cy) {
     const y = cy * CHUNK + rnd(rng, 290, CHUNK - 290);
     if (!tooCloseToExisting(x, y, 720)) {
       const depth = Math.floor(originDistance / CHUNK);
-      const star = addStar(chooseStellarProfile(rng, depth), x, y, rng);
+      const environment = stellarEnvironmentBias(cx, cy);
+      const star = addStar(chooseStellarProfile(rng, depth, environment), x, y, rng);
+      let companion = null;
       if (rng() < .22 && star.family === 'main' && star.mass < 2.8) {
-        const companionProfile = rng() < .82 ? { family: 'main', class: chooseMainClass(rng, depth + 4) } : chooseStellarProfile(rng, depth + 4);
-        if (companionProfile.family !== 'neutron') addCompanionStar(star, companionProfile, rnd(rng, 520, 980), rng() * TAU, rng);
+        const companionEnv = clamp(environment + rnd(rng, -.22, .22), -1, 1);
+        const companionProfile = rng() < .82
+          ? { family: 'main', class: chooseMainClass(rng, depth + 4, companionEnv) }
+          : chooseStellarProfile(rng, depth + 4, companionEnv);
+        if (companionProfile.family !== 'neutron') {
+          companion = addCompanionStar(star, companionProfile, rnd(rng, 520, 980), rng() * TAU, rng);
+        }
       }
-      const canHavePlanets = star.family !== 'neutron' && star.family !== 'whitedwarf';
-      const planetCount = canHavePlanets ? 1 + Math.floor(rng() * (star.family === 'brown' ? 3 : 5)) : Math.floor(rng() * 2);
-      const baseOrbit = star.scan + (star.family === 'redgiant' ? 280 : 150) + rng() * 150;
-      for (let p = 0; p < planetCount; p++) {
-        const orbit = baseOrbit + p * rnd(rng, 170, 300) + rng() * 90;
-        if (star.heatRadius > 0 && orbit < star.heatRadius * .45 && star.luminosity > 50) continue;
-        addPlanet(star, orbit, rng() * TAU, rng);
-      }
-      if (rng() < .45 && star.family !== 'neutron') {
-        const beltR = baseOrbit + planetCount * rnd(rng, 170, 260) + rnd(rng, 40, 220);
-        const n = 3 + Math.floor(rng() * 8);
-        for (let i = 0; i < n; i++) addAsteroid(star, beltR + rnd(rng, -80, 90), rng() * TAU, rng);
-      }
-      if (rng() < .18 && star.family === 'main') {
-        const n = rng() < .35 ? 2 : 1;
-        for (let i = 0; i < n; i++) addComet(star, rnd(rng, 800, 1400), rng() * TAU, rng);
-      }
+
+      populateSystemBodies(star, companion, rng);
     }
   }
 
@@ -808,10 +997,16 @@ function ensureChunksAround(x, y, range = 3) {
 function cleanupFarBodies() {
   if (!player || bodies.length < (lowPower ? 58 : 82)) return;
   const keepDistance = lowPower ? 5200 : 7000;
-  bodies = bodies.filter(b => {
-    if (b.home || b.target || b.id === (target && target.id)) return true;
-    return hypot(b.x - player.x, b.y - player.y) < keepDistance;
-  });
+  let write = 0;
+  for (let read = 0; read < bodies.length; read++) {
+    const b = bodies[read];
+    const keep = b.home
+      || b.target
+      || b.id === (target && target.id)
+      || hypot(b.x - player.x, b.y - player.y) < keepDistance;
+    if (keep) bodies[write++] = b;
+  }
+  bodies.length = write;
 }
 
 function newWorldSeed() {
@@ -854,6 +1049,9 @@ function setupWorld(preview = false) {
   flowAwardLevel = 0;
   warningClock = 0;
   visitedNodes = new Set();
+  tutorialHint = '';
+  tutorialHintTime = 0;
+  tutorialStage = 0;
 
   const homeStar = addStar({ family: 'main', class: 'G' }, 0, 0, Math.random);
   homeStar.home = true;
@@ -932,6 +1130,20 @@ function endGame(reason) {
   soundCue('fail');
 }
 
+function routeBodyRisk(body) {
+  return clamp(
+    (body.kind === 'comet' ? .34 : 0)
+    + (body.kind === 'asteroid' ? .10 : 0)
+    + (body.binary ? .16 : 0)
+    + (body.family === 'neutron' ? .76 : 0)
+    + (body.family === 'whitedwarf' ? .52 : 0)
+    + (body.class === 'O' || body.class === 'B' ? .60 : 0)
+    + (body.luminosity > 50 ? .16 : 0),
+    0,
+    1
+  );
+}
+
 function chooseTarget(force = false) {
   if (!player) return;
   ensureChunksAround(player.x, player.y, lowPower ? 3 : 4);
@@ -940,6 +1152,10 @@ function chooseTarget(force = false) {
   const minD = (force ? 520 : 720 + Math.min(score, 45) * 7) * difficulty.targetMin;
   const maxD = (force ? 2300 : 3100 + Math.min(score, 65) * 15) * difficulty.targetMax;
   const candidates = [];
+  const sectorX = Math.floor(player.x / CHUNK);
+  const sectorY = Math.floor(player.y / CHUNK);
+  const routeRng = mulberry32(hash2(sectorX * 4099 + score * 17 + (force ? 1 : 0), sectorY * 9173 + chain * 31));
+  const riskPreference = clamp((difficulty.routeRisk - 1) * .92, -0.52, .46);
 
   for (const b of bodies) {
     if (b.kind === 'blackhole' || b.home || b.visited) continue;
@@ -950,17 +1166,32 @@ function chooseTarget(force = false) {
     const rewardWeight = Math.sqrt(b.reward || 1) / 4;
     const distanceFit = 1 - Math.abs(d - (minD + maxD) * .5) / ((maxD - minD) * .5);
     const variety = b.kind === 'comet' ? .2 : (b.kind === 'asteroid' ? .08 : (b.binary ? .1 : 0));
-    const risk = b.family === 'neutron' || b.family === 'whitedwarf' || b.class === 'O' || b.class === 'B' ? .09 : 0;
-    candidates.push({ body: b, v: forward * .36 + distanceFit * .38 + rewardWeight * .23 + variety + risk + Math.random() * .05 });
+    const intrinsicRisk = routeBodyRisk(b);
+    const baseScore = forward * .36 + distanceFit * .38 + rewardWeight * .23 + variety;
+    const riskTerm = intrinsicRisk * riskPreference;
+    candidates.push({
+      body: b,
+      risk: intrinsicRisk,
+      v: baseScore + riskTerm + routeRng() * (.018 + difficulty.routeRisk * .014)
+    });
   }
 
   if (!candidates.length) {
-    const a = speedAngle + rnd(Math.random, -.75, .75);
-    const d = rnd(Math.random, 1700 * difficulty.targetMin, (3150 + score * 9) * difficulty.targetMax);
-    const star = addStar(chooseStellarProfile(Math.random, 99), player.x + Math.cos(a) * d, player.y + Math.sin(a) * d, Math.random);
-    if (Math.random() < .28 && star.family === 'main') addCompanionStar(star, { family: 'main', class: chooseMainClass(Math.random, 9) }, rnd(Math.random, 540, 920), Math.random() * TAU, Math.random);
-    const count = star.family === 'neutron' ? 0 : 1 + Math.floor(Math.random() * 3);
-    for (let i = 0; i < count; i++) addPlanet(star, star.scan + 150 + i * 220 + Math.random() * 100, Math.random() * TAU, Math.random);
+    const fallbackSeed = hash2(sectorX * 197 + Math.floor(score / 3) + (force ? 23 : 0), sectorY * 149 + chain * 5 + routeChoice);
+    const fallbackRng = mulberry32(fallbackSeed);
+    const a = speedAngle + rnd(fallbackRng, -.75, .75);
+    const d = rnd(fallbackRng, 1700 * difficulty.targetMin, (3150 + score * 9) * difficulty.targetMax);
+    const tx = player.x + Math.cos(a) * d;
+    const ty = player.y + Math.sin(a) * d;
+    const depth = Math.floor(hypot(tx, ty) / CHUNK);
+    const env = stellarEnvironmentBias(Math.floor(tx / CHUNK), Math.floor(ty / CHUNK));
+    const star = addStar(chooseStellarProfile(fallbackRng, Math.max(8, depth), env), tx, ty, fallbackRng);
+    let companion = null;
+    if (fallbackRng() < .28 && star.family === 'main') {
+      const compEnv = clamp(env + rnd(fallbackRng, -.18, .18), -1, 1);
+      companion = addCompanionStar(star, { family: 'main', class: chooseMainClass(fallbackRng, Math.max(9, depth + 1), compEnv) }, rnd(fallbackRng, 540, 920), fallbackRng() * TAU, fallbackRng);
+    }
+    populateSystemBodies(star, companion, fallbackRng, { minPlanets: star.family === 'neutron' ? 0 : 1, maxPlanets: 3 });
     routeOptions = [star];
     routeChoice = 0;
     setTarget(star, true);
@@ -969,10 +1200,12 @@ function chooseTarget(force = false) {
 
   candidates.sort((a, b) => b.v - a.v);
   routeOptions = [];
+  const routeLimit = clamp(Math.floor(difficulty.routeOptionsCount || 3), 1, 6);
   for (const c of candidates) {
     if (!routeOptions.some(b => b.id === c.body.id)) routeOptions.push(c.body);
-    if (routeOptions.length >= 3) break;
+    if (routeOptions.length >= routeLimit) break;
   }
+  if (!routeOptions.length) return;
   routeChoice = 0;
   setTarget(routeOptions[0], true);
 }
@@ -984,7 +1217,7 @@ function setTarget(body, announce = true) {
   if (target) {
     target.target = true;
     if (announce) {
-      message = `${objective.title}: ${labelOf(target)}`;
+      message = `${objective.title}: ${labelOf(target)} · ${objective.reward}`;
       messageTime = 1.35;
     }
   }
@@ -1002,24 +1235,31 @@ function cycleTarget() {
   soundCue('route', null, routeChoice);
 }
 
+function objectiveRoll(body) {
+  const ix = Math.floor((body.x || 0) / 12) + Math.imul(body.id || 0, 73) + difficultyIndex * 997;
+  const iy = Math.floor((body.y || 0) / 12) + Math.imul((body.reward || 1), 389) + (body.kind ? body.kind.length * 41 : 0);
+  return mulberry32(hash2(ix, iy))();
+}
+
 function buildObjective(body) {
+  const roll = objectiveRoll(body);
   let type = 'survey';
-  if (body.kind === 'comet') type = Math.random() < .7 ? 'rendezvous' : 'survey';
-  else if (body.kind === 'planet') type = Math.random() < .56 ? 'orbit' : 'sling';
-  else if (body.kind === 'asteroid') type = Math.random() < .62 ? 'survey' : 'silent';
+  if (body.kind === 'comet') type = roll < .7 ? 'rendezvous' : 'survey';
+  else if (body.kind === 'planet') type = roll < .56 ? 'orbit' : 'sling';
+  else if (body.kind === 'asteroid') type = roll < .62 ? 'survey' : 'silent';
   else if (body.kind === 'star') {
-    if (body.family === 'neutron' || body.family === 'whitedwarf') type = Math.random() < .6 ? 'tide' : 'sling';
-    else if (body.luminosity > 18 || body.family === 'redgiant' || body.class === 'O' || body.class === 'B') type = Math.random() < .64 ? 'skim' : 'survey';
-    else type = Math.random() < .48 ? 'orbit' : 'survey';
+    if (body.family === 'neutron' || body.family === 'whitedwarf') type = roll < .6 ? 'tide' : 'sling';
+    else if (body.luminosity > 18 || body.family === 'redgiant' || body.class === 'O' || body.class === 'B') type = roll < .64 ? 'skim' : 'survey';
+    else type = roll < .48 ? 'orbit' : 'survey';
   }
   const defs = {
-    survey:     { code: 'SCAN',   title: 'Скан цели',       hint: 'пролети через тонкое кольцо', bonus: 2 },
-    orbit:      { code: 'ORBIT',  title: 'Выйди на орбиту', hint: 'держи корабль на ровной дуге', bonus: 5 },
-    sling:      { code: 'SLING',  title: 'Гравитационный разгон',hint: 'пройди рядом без тяги и выйди быстрее', bonus: 6 },
-    skim:       { code: 'SKIM',   title: 'Пролёт у звезды',       hint: 'зайди в зону излучения и быстро уходи', bonus: 7 },
-    rendezvous: { code: 'COMET',  title: 'Догнать комету',    hint: 'сблизься с ней и выровняй скорость', bonus: 7 },
-    tide:       { code: 'TIDE',   title: 'Опасное сближение',      hint: 'подойди близко, но не перегрузи корпус', bonus: 9 },
-    silent:     { code: 'QUIET',  title: 'Скан без тяги',           hint: 'пролети кольцо на инерции', bonus: 4 }
+    survey:     { code: 'SCAN',   title: 'Скан цели',       hint: 'пролети через тонкое кольцо', bonus: 2, risk: 'низкий', reward: '+скан и топливо' },
+    orbit:      { code: 'ORBIT',  title: 'Выйди на орбиту', hint: 'держи корабль на ровной дуге', bonus: 5, risk: 'средний', reward: '+точность' },
+    sling:      { code: 'SLING',  title: 'Гравитационный разгон', hint: 'пройди рядом без тяги и выйди быстрее', bonus: 6, risk: 'средний', reward: '+скорость' },
+    skim:       { code: 'SKIM',   title: 'Пролёт у звезды',       hint: 'зайди в зону излучения и быстро уходи', bonus: 7, risk: 'нагрев', reward: '+риск' },
+    rendezvous: { code: 'COMET',  title: 'Догнать комету',    hint: 'сблизься с ней и выровняй скорость', bonus: 7, risk: 'скорость', reward: '+комета' },
+    tide:       { code: 'TIDE',   title: 'Опасное сближение',      hint: 'подойди близко, но не превысь нагрузку', bonus: 9, risk: 'нагрузка', reward: '+опасность' },
+    silent:     { code: 'QUIET',  title: 'Скан без тяги',           hint: 'пролети кольцо на инерции', bonus: 4, risk: 'контроль', reward: '+инерция' }
   };
   return { type, ...(defs[type] || defs.survey), bodyId: body.id, started: time };
 }
@@ -1050,7 +1290,7 @@ function objectiveScore(body, perfect, quality, relSpeed, distance) {
   } else {
     ok = true;
   }
-  return { bonus: ok ? bonus : Math.floor(bonus * .3), ok, label };
+  return { bonus: ok ? bonus : Math.floor(bonus * clamp(difficulty.partialObjectiveFactor, 0, .95)), ok, label };
 }
 
 function completeSlingObjective(body, points) {
@@ -1062,12 +1302,12 @@ function completeSlingObjective(body, points) {
   score += gained;
   best = Math.max(best, score);
   saveBest();
-  player.fuel = clamp(player.fuel + 18, 0, player.maxFuel);
-  player.heat = Math.max(0, player.heat - .08);
-  player.stress = Math.max(0, (player.stress || 0) - .05);
+  player.fuel = clamp(player.fuel + 18 * difficulty.rewardFuelMul, 0, player.maxFuel);
+  player.heat = Math.max(0, player.heat - .08 * difficulty.rewardHeatReliefMul);
+  player.stress = Math.max(0, (player.stress || 0) - .05 * difficulty.rewardStressReliefMul);
   texts.push({ x: body.x, y: body.y - body.r - 42, text: `разгон +${gained}`, hue: body.hue, life: 1.45, max: 1.45 });
   burst(player.x, player.y, 66, body.hue, .85);
-  message = 'Манёвр удался';
+  message = 'Гравитационный манёвр выполнен';
   messageTime = 1.1;
   chooseTarget();
   return true;
@@ -1083,9 +1323,67 @@ function completeSlingObjective(body, points) {
 
 'use strict';
 
+const bodyLookupCache = {
+  source: null,
+  length: -1,
+  firstId: 0,
+  lastId: 0,
+  byId: new Map()
+};
+
+const gravitySourceScratch = [];
+const gravitySourceStrengths = [];
+const gravitySourceResult = [];
+
+function getBodyByIdIndex() {
+  const length = bodies.length;
+  const firstId = length > 0 ? bodies[0].id : 0;
+  const lastId = length > 0 ? bodies[length - 1].id : 0;
+  if (
+    bodyLookupCache.source === bodies
+    && bodyLookupCache.length === length
+    && bodyLookupCache.firstId === firstId
+    && bodyLookupCache.lastId === lastId
+  ) {
+    return bodyLookupCache.byId;
+  }
+
+  bodyLookupCache.source = bodies;
+  bodyLookupCache.length = length;
+  bodyLookupCache.firstId = firstId;
+  bodyLookupCache.lastId = lastId;
+  bodyLookupCache.byId.clear();
+  for (let i = 0; i < bodies.length; i++) bodyLookupCache.byId.set(bodies[i].id, bodies[i]);
+  return bodyLookupCache.byId;
+}
+
+function bodyIntersectsView(b, left, right, top, bottom) {
+  const radius = b.field || b.r || 0;
+  return b.x + radius > left && b.x - radius < right && b.y + radius > top && b.y - radius < bottom;
+}
+
+function gravitySourceStrength(b, cx, cy) {
+  const d = Math.max(80, hypot(b.x - cx, b.y - cy) - (b.r || 0));
+  return (b.mu || 0) / (d * d);
+}
+
+function insertGravitySource(list, strengths, candidate, strength, limit) {
+  let insertAt = list.length;
+  while (insertAt > 0 && strength > strengths[insertAt - 1]) insertAt--;
+  if (insertAt >= limit) return;
+  const nextLength = Math.min(list.length + 1, limit);
+  for (let i = nextLength - 1; i > insertAt; i--) {
+    list[i] = list[i - 1];
+    strengths[i] = strengths[i - 1];
+  }
+  list[insertAt] = candidate;
+  strengths[insertAt] = strength;
+  list.length = nextLength;
+  strengths.length = nextLength;
+}
+
 function updateBodies(dt) {
-  const byId = new Map();
-  for (const b of bodies) byId.set(b.id, b);
+  const byId = getBodyByIdIndex();
   for (const b of bodies) {
     if (b.scanCooldown > 0) b.scanCooldown -= dt;
     if (b.kind === 'asteroid' || b.kind === 'comet') b.phase += (b.spin || 0) * dt;
@@ -1155,16 +1453,27 @@ function gravityAtFrom(sourceBodies, x, y, includeDominant = true) {
 }
 
 function strongestGravitySources(extra = 2600, limit = 22) {
-  if (!player && state !== 'menu') return [];
+  const out = gravitySourceResult;
+  out.length = 0;
+  if (!player && state !== 'menu') return out;
   const cx = player ? player.x : camera.x;
   const cy = player ? player.y : camera.y;
-  const list = visibleBodies(extra).filter(b => b.gravitates);
-  list.sort((a, b) => {
-    const da = Math.max(80, hypot(a.x - cx, a.y - cy) - (a.r || 0));
-    const db = Math.max(80, hypot(b.x - cx, b.y - cy) - (b.r || 0));
-    return ((b.mu || 0) / (db * db)) - ((a.mu || 0) / (da * da));
-  });
-  const out = list.slice(0, limit);
+  const left = camera.x - W / (2 * camera.zoom) - extra;
+  const right = camera.x + W / (2 * camera.zoom) + extra;
+  const top = camera.y - H / (2 * camera.zoom) - extra;
+  const bottom = camera.y + H / (2 * camera.zoom) + extra;
+  const ranked = gravitySourceScratch;
+  const strengths = gravitySourceStrengths;
+  ranked.length = 0;
+  strengths.length = 0;
+
+  for (let i = 0; i < bodies.length; i++) {
+    const b = bodies[i];
+    if (!b.gravitates || !bodyIntersectsView(b, left, right, top, bottom)) continue;
+    insertGravitySource(ranked, strengths, b, gravitySourceStrength(b, cx, cy), limit);
+  }
+
+  for (let i = 0; i < ranked.length; i++) out.push(ranked[i]);
   perf.gravSources = out.length;
   return out;
 }
@@ -1283,6 +1592,7 @@ function update(dt) {
   frame++;
   if (messageTime > 0 && messageTime < 90) messageTime -= dt;
   if (gravityAdviceTime > 0) gravityAdviceTime -= dt;
+  if (tutorialHintTime > 0) tutorialHintTime -= dt;
   updateBodies(dt);
   if (state === 'play') updateGame(dt);
   else setEngineAudio(false, 0);
@@ -1305,7 +1615,8 @@ function updateGame(dt) {
   const gravityBurn = clamp(Math.log1p(preG.mag) / 9.6, 0, .55);
 
   const turnRate = 3.85;
-  if (pointer.has && performance.now() - pointer.last < 4500) {
+  const pointerAimActive = pointer.has && performance.now() - pointer.last < Math.max(0, difficultyNumber('autoAimMs', 4500));
+  if (pointerAimActive) {
     const desired = Math.atan2(pointer.wy - player.y, pointer.wx - player.x);
     player.angle += clamp(angleDiff(player.angle, desired), -turnRate * dt, turnRate * dt);
   }
@@ -1384,8 +1695,8 @@ function updateGame(dt) {
     player.vy *= k;
   }
 
-  if (!pointer.has && speed > 18 && !left && !right) {
-    player.angle += angleDiff(player.angle, Math.atan2(player.vy, player.vx)) * .02;
+  if (!pointerAimActive && speed > 18 && !left && !right) {
+    player.angle += angleDiff(player.angle, Math.atan2(player.vy, player.vx)) * difficultyNumber('autoAlignK', .02);
   }
 
   player.trail.push({ x: player.x, y: player.y, speed, heat: player.heat });
@@ -1393,6 +1704,7 @@ function updateGame(dt) {
 
   checkCollisionsAndScans(dt);
   checkLagrangeNodes(dt);
+  updateTutorialHints(thrusting, brakeInput);
 
   const lookX = player.x + player.vx * .33;
   const lookY = player.y + player.vy * .33;
@@ -1401,6 +1713,29 @@ function updateGame(dt) {
   camera.shake = Math.max(0, camera.shake - dt * 25);
   const baseZoom = W < 700 ? .88 : 1;
   camera.zoom = lerp(camera.zoom, baseZoom * userZoom, .040);
+}
+
+function showTutorialHint(text, duration = 2.4) {
+  tutorialHint = text;
+  tutorialHintTime = duration;
+}
+
+function updateTutorialHints(thrusting, brakeInput) {
+  if (!player || state !== 'play' || score > 8) return;
+  if (tutorialHintTime > 0) return;
+  if (tutorialStage === 0 && time > 1.0) {
+    tutorialStage = 1;
+    showTutorialHint('Тяга меняет курс. Отпускай её, чтобы поле вело корабль дальше.');
+  } else if (tutorialStage === 1 && target && worldDistanceToTarget() < 1700) {
+    tutorialStage = 2;
+    showTutorialHint('Кольцо цели даёт очки. Чище дуга — выше награда.');
+  } else if (tutorialStage === 2 && player.noThrustTime > 1.4 && player.driftCharge > 1.2) {
+    tutorialStage = 3;
+    showTutorialHint('Инерция копит заряд дуги. Риск окупается, пока нагрев и нагрузка в норме.');
+  } else if (tutorialStage === 3 && (player.heat > .45 || player.stress > .45 || brakeInput || thrusting)) {
+    tutorialStage = 4;
+    showTutorialHint('Следи за нагревом и нагрузкой. Красные шкалы требуют выхода из поля.');
+  }
 }
 
 function updateGravityFlow(g, dt) {
@@ -1447,11 +1782,11 @@ function detectGravityAssist(g, dt) {
       score += points;
       best = Math.max(best, score);
       saveBest();
-      texts.push({ x: player.x, y: player.y - 22, text: `манёвр +${points}`, hue: b.hue, life: 1.2, max: 1.2 });
+      texts.push({ x: player.x, y: player.y - 22, text: `гравиманёвр +${points}`, hue: b.hue, life: 1.2, max: 1.2 });
       burst(player.x, player.y, 30, b.hue, .55);
       soundCue('assist', b, points);
       lastAssistBody = b.id;
-      message = 'Поле разогнало корабль';
+      message = 'Гравитация добавила скорость';
       messageTime = .9;
       completeSlingObjective(b, points);
     }
@@ -1478,10 +1813,18 @@ function updateThermalAndFuel(dt) {
     particles.push({ x: player.x + rnd(Math.random, -12, 12), y: player.y + rnd(Math.random, -12, 12), vx: rnd(Math.random, -18, 18), vy: rnd(Math.random, -18, 18), size: rnd(Math.random, 1, 2.5), hue: tide.body.hue || 255, life: .28, max: .28, drag: .92 });
   }
 
+  const heatRisk = player.heat > .72;
+  const stressRisk = player.stress > .72;
   warningClock = Math.max(0, warningClock - dt);
-  if (warningClock <= 0 && (player.heat > .72 || player.stress > .72)) {
-    warningClock = .52;
+  if (warningClock <= 0 && (heatRisk || stressRisk)) {
+    warningClock = .62;
     soundCue('warn');
+    if (messageTime <= .16 || (message && message.startsWith('Риск:'))) {
+      message = heatRisk && stressRisk
+        ? 'Риск: перегрев и перегрузка'
+        : (heatRisk ? 'Риск: перегрев' : 'Риск: перегрузка');
+      messageTime = .78;
+    }
   }
 
   if (player.heat >= 1) endGame('Корабль перегрелся у звезды');
@@ -1539,10 +1882,10 @@ function checkLagrangeNodes(dt) {
     chain += 1;
     best = Math.max(best, score);
     saveBest();
-    player.fuel = clamp(player.fuel + 20 + speedBonus * 4, 0, player.maxFuel);
+    player.fuel = clamp(player.fuel + (20 + speedBonus * 4) * difficultyNumber('rewardFuelMul', 1), 0, player.maxFuel);
     player.driftCharge = clamp(player.driftCharge + 1.5, 0, 10);
-    player.heat = Math.max(0, player.heat - .05);
-    player.stress = Math.max(0, (player.stress || 0) - .04);
+    player.heat = Math.max(0, player.heat - .05 * difficultyNumber('rewardHeatReliefMul', 1));
+    player.stress = Math.max(0, (player.stress || 0) - .04 * difficultyNumber('rewardStressReliefMul', 1));
     texts.push({ x: n.x, y: n.y - 24, text: `${n.label} точка +${gained}`, hue: n.hue, life: 1.45, max: 1.45 });
     burst(n.x, n.y, 44, n.hue, .72);
     soundCue('node', n.body, n.label === 'L4' ? 1 : 2);
@@ -1569,10 +1912,10 @@ function checkCollisionsAndScans(dt) {
     if (b.kind !== 'blackhole' && !b.home && !b.visited && b.scanCooldown <= 0) {
       const band = Math.abs(d - b.scan) < b.scanWidth * difficulty.scanEase;
       const speed = hypot(player.vx - (b.vx || 0), player.vy - (b.vy || 0));
-      const safeSpeed = speed > 78;
+      const safeSpeed = speed > difficultyNumber('scanMinSpeed', 78);
       if (band && safeSpeed && now - player.lastScanAt > .62) {
         const q = orbitalElements(b);
-        scanBody(b, q && q.quality > .76, q ? q.quality : 0, speed, d);
+        scanBody(b, q && q.quality > difficultyNumber('perfectQuality', .76), q ? q.quality : 0, speed, d);
         return;
       }
     }
@@ -1599,11 +1942,11 @@ function scanBody(body, perfect, quality, relSpeed = 0, distance = 0) {
   saveBest();
 
   const fuelBonus = body.kind === 'star' ? 16 : (body.kind === 'comet' ? 10 : 24);
-  player.fuel = clamp(player.fuel + fuelBonus + perfectBonus * 4, 0, player.maxFuel);
-  player.heat = Math.max(0, player.heat - (perfect ? .13 : .07));
-  player.stress = Math.max(0, (player.stress || 0) - .08);
+  player.fuel = clamp(player.fuel + (fuelBonus + perfectBonus * 4) * difficultyNumber('rewardFuelMul', 1), 0, player.maxFuel);
+  player.heat = Math.max(0, player.heat - (perfect ? .13 : .07) * difficultyNumber('rewardHeatReliefMul', 1));
+  player.stress = Math.max(0, (player.stress || 0) - .08 * difficultyNumber('rewardStressReliefMul', 1));
 
-  const label = body.target && obj.label ? `${obj.label} +${gained}` : (perfect ? `орбита +${gained}` : `данные +${gained}`);
+  const label = body.target && obj.label ? `${obj.label} +${gained}` : (perfect ? `орбита +${gained}` : `скан +${gained}`);
   texts.push({ x: body.x, y: body.y - body.r - 34, text: label, hue: body.hue, life: 1.35, max: 1.35 });
   burst(body.x, body.y, perfect || obj.ok ? 86 : 54, body.hue, perfect || obj.ok ? 1.25 : .88);
   camera.shake = Math.max(camera.shake, perfect || obj.ok ? 7 : 4);
@@ -1612,9 +1955,9 @@ function scanBody(body, perfect, quality, relSpeed = 0, distance = 0) {
 
   player.driftCharge = Math.max(0, player.driftCharge - 3.0);
   if (body.target && objective) {
-    message = obj.ok ? `${objective.title}: выполнено` : `${objective.title}: частичный проход`;
+    message = obj.ok ? `${objective.title}: выполнено` : `${objective.title}: частично выполнено`;
   } else {
-    message = perfect ? 'Орбита стабилизирована' : `Сигнал считан: ${labelOf(body)}`;
+    message = perfect ? 'Орбита стабилизирована' : `Скан завершён: ${labelOf(body)}`;
   }
   messageTime = .95;
 
@@ -1711,6 +2054,8 @@ function updateTexts(dt) {
 
 'use strict';
 
+const visibleBodiesScratch = [];
+
 function draw() {
   drawBackground();
   let sx = 0;
@@ -1805,12 +2150,21 @@ function drawCoordinateGrid() {
   ctx.restore();
 }
 
-function visibleBodies(extra = 360) {
+function collectVisibleBodies(extra, out) {
   const left = camera.x - W / (2 * camera.zoom) - extra;
   const right = camera.x + W / (2 * camera.zoom) + extra;
   const top = camera.y - H / (2 * camera.zoom) - extra;
   const bottom = camera.y + H / (2 * camera.zoom) + extra;
-  return bodies.filter(b => b.x + (b.field || b.r) > left && b.x - (b.field || b.r) < right && b.y + (b.field || b.r) > top && b.y - (b.field || b.r) < bottom);
+  out.length = 0;
+  for (let i = 0; i < bodies.length; i++) {
+    const b = bodies[i];
+    if (bodyIntersectsView(b, left, right, top, bottom)) out.push(b);
+  }
+  return out;
+}
+
+function visibleBodies(extra = 360) {
+  return collectVisibleBodies(extra, []);
 }
 
 function rebuildGravityFieldCache() {
@@ -2008,7 +2362,7 @@ function drawGravityCompass() {
   ctx.font = '10px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
   ctx.textAlign = 'left';
   ctx.fillStyle = `hsla(${hue}, 96%, 82%, .72)`;
-  ctx.fillText(`G ${fmtNum(mag, 1)} · ${g.body ? labelOf(g.body) : 'FIELD'}`, tipX + 8, tipY - 5);
+  ctx.fillText(`G ${fmtNum(mag, 1)} · ${g.body ? labelOf(g.body) : 'поле'}`, tipX + 8, tipY - 5);
   if ((player.gravBoost || 0) > .08) {
     ctx.fillStyle = `hsla(${hue}, 96%, 82%, .72)`;
     ctx.fillText(`поле помогает +${Math.round((player.gravBoost || 0) * 100)}%`, ps.x + 13, ps.y + 18);
@@ -2025,7 +2379,12 @@ function rebuildPredictionCache() {
   let vy = player.vy;
   const dt = lowPower ? .078 : .062;
   const points = [{ x, y }];
-  const predictSteps = lowPower ? 54 : 96;
+  const baseSteps = lowPower ? 54 : 96;
+  const predictSteps = clamp(
+    Math.round(baseSteps * difficultyNumber('predictionStepsMul', 1)),
+    lowPower ? 26 : 36,
+    lowPower ? 124 : 220
+  );
   for (let i = 0; i < predictSteps; i++) {
     const g0 = gravityAtFrom(sources, x, y, false);
     const w0 = stellarWindAt(x, y);
@@ -2149,9 +2508,9 @@ function drawRoute() {
 }
 
 function drawBodies() {
-  const list = visibleBodies(450);
-  for (const b of list) drawBodyFields(b);
-  for (const b of list) drawBodyCore(b);
+  const list = collectVisibleBodies(450, visibleBodiesScratch);
+  for (let i = 0; i < list.length; i++) drawBodyFields(list[i]);
+  for (let i = 0; i < list.length; i++) drawBodyCore(list[i]);
 }
 
 function drawBodyFields(b) {
@@ -2602,12 +2961,17 @@ function drawMetricBar(x, y, w, label, value, hue, valueText = '') {
 function objectiveVerb(obj) {
   if (!obj) return 'выбери цель';
   if (obj.type === 'orbit') return 'держи ровную орбиту';
-  if (obj.type === 'sling') return 'разгонись у поля';
+  if (obj.type === 'sling') return 'разгонись в поле';
   if (obj.type === 'skim') return 'быстро пройди у звезды';
   if (obj.type === 'rendezvous') return 'догоняй и выравнивай скорость';
   if (obj.type === 'tide') return 'подойди близко, но не сорвись';
   if (obj.type === 'silent') return 'пройди кольцо без тяги';
   return 'пролети через кольцо';
+}
+
+function objectiveMetaText(obj) {
+  if (!obj) return '';
+  return `риск: ${obj.risk || 'обычный'} · награда: ${obj.reward || '+' + (obj.bonus || 0)}`;
 }
 
 function drawScorePanel(x, y, compact) {
@@ -2633,7 +2997,7 @@ function drawScorePanel(x, y, compact) {
 function drawObjectivePanel(x, y, compact) {
   if (!objective || !target) return { x, y, w: 0, h: 0 };
   const w = Math.min(compact ? W - x * 2 : 396, W - x * 2);
-  const h = compact ? 78 : 96;
+  const h = compact ? 84 : 106;
   drawSoftPanel(x, y, w, h, 16, .48);
   ctx.textAlign = 'left';
   ctx.textBaseline = 'top';
@@ -2644,6 +3008,11 @@ function drawObjectivePanel(x, y, compact) {
   ctx.fillStyle = 'rgba(238,246,255,.46)';
   ctx.font = '11px ui-sans-serif, system-ui';
   drawWrappedText(objective.hint, x + 14, y + (compact ? 40 : 43), w - 28, compact ? 13 : 14, compact ? 1 : 2);
+  if (!compact) {
+    ctx.fillStyle = 'rgba(255,214,145,.54)';
+    ctx.font = '10px ui-sans-serif, system-ui';
+    ctx.fillText(objectiveMetaText(objective), x + 14, y + 65);
+  }
   const d = worldDistanceToTarget();
   ctx.fillStyle = `hsla(${target.hue}, 94%, 78%, .66)`;
   ctx.font = '10px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
@@ -2666,9 +3035,9 @@ function drawShipPanel(compact) {
   ctx.font = '700 10px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
   ctx.fillText('КОРАБЛЬ', x + 12, y + 11);
   const bw = w - 24;
-  drawMetricBar(x + 12, y + 30, bw, 'тяга', player.fuel / player.maxFuel, 196, `${Math.round(player.fuel)}%`);
+  drawMetricBar(x + 12, y + 30, bw, 'топливо', player.fuel / player.maxFuel, 196, `${Math.round(player.fuel)}%`);
   drawMetricBar(x + 12, y + 56, bw, 'нагрев', player.heat, 18, `${Math.round(player.heat * 100)}%`);
-  drawMetricBar(x + 12, y + 82, bw, 'корпус', player.stress || 0, 270, `${Math.round((player.stress || 0) * 100)}%`);
+  drawMetricBar(x + 12, y + 82, bw, 'нагрузка', player.stress || 0, 270, `${Math.round((player.stress || 0) * 100)}%`);
   if (!compact) drawMetricBar(x + 12, y + 108, bw, 'инерция', player.driftCharge / 10, 255, `${Math.round(player.driftCharge * 10)}%`);
   return { x, y, w, h };
 }
@@ -2690,6 +3059,15 @@ function drawPlayHud() {
     ctx.font = '600 12px ui-sans-serif, system-ui';
     ctx.fillText(gravityAdvice, W / 2, H - (W < 560 ? 78 : 70));
   }
+
+  if (tutorialHintTime > 0 && tutorialHint) {
+    const hintW = Math.min(260, W - 36);
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'top';
+    ctx.fillStyle = 'rgba(238,246,255,.62)';
+    ctx.font = '600 12px ui-sans-serif, system-ui';
+    drawWrappedText(tutorialHint, W / 2 - hintW / 2, H - (W < 560 ? 108 : 100), hintW, 15, 2);
+  }
 }
 
 function drawHud() {
@@ -2708,7 +3086,7 @@ function drawHud() {
   }
 
   if (state === 'menu') drawOverlay('ORBIT DRIFT', 'Лети от звезды к звезде. Гравитация меняет курс.', 'В полёт');
-  if (state === 'dead') drawOverlay('Корабль потерян', message || 'Связь с кораблём потеряна', 'Ещё запуск');
+  if (state === 'dead') drawOverlay('Миссия провалена', message || 'Связь потеряна', 'Начать заново');
   ctx.restore();
 }
 
@@ -2754,22 +3132,24 @@ function drawNavPanel() {
     yy += compact ? 15 : 17;
   };
   ctx.fillStyle = 'rgba(149,228,255,.82)';
-  ctx.fillText('НАВИГАЦИЯ · ВЕКТОРЫ', x + 14, yy);
+  ctx.fillText('НАВИГАЦИЯ · ПОЛЁТ', x + 14, yy);
   yy += compact ? 17 : 20;
-  if (objective && target) line('ЦЕЛЬ', `${objective.code}  ${labelOf(target)}  сигнал ${fmtNum(navSignal, 2)}`, target.hue);
-  line('POS', `X ${fmtSigned(player.x / 1000, 2)}  Y ${fmtSigned(player.y / 1000, 2)}`);
-  line('VEL', `${fmtSigned(player.vx, 0)} ${fmtSigned(player.vy, 0)}  |v| ${fmtNum(speed, 0)}`);
-  line('ACC', `${fmtNum(hypot(g.ax, g.ay), 2)} g*  ${dom ? labelOf(dom) : 'none'}  MAP ${gravityLayer ? 'on' : 'off'}`, dom ? dom.hue : null);
+  if (objective && target) {
+    line('ЦЕЛЬ', compact ? `${objective.code}  ${objective.risk || 'риск'}` : `${objective.code}  ${labelOf(target)}  ${objective.risk || 'риск'} / ${objective.reward || '+'}`, target.hue);
+  }
+  line('ПОЗИЦИЯ', `X ${fmtSigned(player.x / 1000, 2)}  Y ${fmtSigned(player.y / 1000, 2)}`);
+  line('СКОРОСТЬ', `${fmtSigned(player.vx, 0)} ${fmtSigned(player.vy, 0)}  |v| ${fmtNum(speed, 0)}`);
+  line('ПРИТЯЖ.', `${fmtNum(hypot(g.ax, g.ay), 2)} g*  ${dom ? labelOf(dom) : 'нет'}  карта ${gravityLayer ? 'вкл' : 'выкл'}`, dom ? dom.hue : null);
   if (!compact) {
-    line('ПОЛЕ', `помощь +${Math.round((player.gravBoost || 0) * 100)}%  радиус ${dom ? fmtNum(dom.field || 0, 0) : '0'}м`, dom ? dom.hue : null);
-    line('ПРОИЗВ', `${fmtNum(perf.fps, 0)}fps  тел ${bodies.length}  G ${perf.gravSources}  линий ${perf.fieldLines}`, 205);
-    line('КАРТА', `${mapCode}  zoom ${fmtNum(userZoom, 2)}x  DPR ${fmtNum(DPR, 1)}`, 205);
-    line('ИЗЛУЧ', `${fmtNum(rad.flux, 2)}  ветер ${fmtNum(wind.mag, 2)}  нагрев ${fmtNum(player.heat, 2)}`, rad.body ? rad.body.hue : null);
-    line('КОРПУС', `${fmtNum(tide.stress, 3)}  риск ${fmtNum(player.stress || 0, 2)}  топл ${fmtNum(player.fuel / player.maxFuel, 2)}`, tide.body ? tide.body.hue : null);
+    line('ПОЛЕ', `усиление +${Math.round((player.gravBoost || 0) * 100)}%  радиус ${dom ? fmtNum(dom.field || 0, 0) : '0'}м`, dom ? dom.hue : null);
+    line('СИСТЕМА', `${fmtNum(perf.fps, 0)} кадр/с  тел ${bodies.length}  G ${perf.gravSources}  линий ${perf.fieldLines}`, 205);
+    line('КАРТА', `${mapCode}  масштаб ${fmtNum(userZoom, 2)}x  DPR ${fmtNum(DPR, 1)}`, 205);
+    line('ИЗЛУЧЕНИЕ', `${fmtNum(rad.flux, 2)}  ветер ${fmtNum(wind.mag, 2)}  нагрев ${fmtNum(player.heat, 2)}`, rad.body ? rad.body.hue : null);
+    line('НАГРУЗКА', `${fmtNum(tide.stress, 3)}  риск ${fmtNum(player.stress || 0, 2)}  топливо ${fmtNum(player.fuel / player.maxFuel, 2)}`, tide.body ? tide.body.hue : null);
   }
   if (dom && orb) {
     line('ТЕЛО', `${labelOf(dom)}  M ${fmtNum(dom.mass || 0, 2)}  μ ${fmtNum(dom.mu / 1000, 1)}`, dom.hue);
-    if (!compact && dom.soi) line('SOI', `${fmtNum(dom.soi, 0)}м  плотн ${fmtNum(dom.densityCode || 0, 4)}`);
+    if (!compact && dom.soi) line('СФЕРА', `${fmtNum(dom.soi, 0)}м  плотн ${fmtNum(dom.densityCode || 0, 4)}`);
     const apo = isFinite(orb.apo) ? fmtNum(orb.apo, 0) : 'escape';
     line('ОРБИТА', `e ${fmtNum(orb.ecc, 2)}  pe ${fmtNum(orb.peri, 0)}  ap ${apo}`);
     if (!compact) line('ЗАХВАТ', `vc ${fmtNum(orb.circular, 0)}  ve ${fmtNum(orb.escape, 0)}  q ${fmtNum(orb.quality, 2)}`);
@@ -2782,13 +3162,13 @@ function drawNavPanel() {
     const closing = -((player.vx - (target.vx || 0)) * dx + (player.vy - (target.vy || 0)) * dy) / Math.max(d, 1);
     const eta = closing > 8 ? d / closing : Infinity;
     line('ЦЕЛЬ', `${labelOf(target)}  ${fmtNum(d, 0)}м  курс ${fmtNum(bearing, 0)}°`, target.hue);
-    if (!compact) line('ETA', isFinite(eta) ? `${fmtNum(eta, 1)}с  сближ ${fmtNum(closing, 0)}` : `нет решения`);
+    if (!compact) line('ДО СБЛИЖ.', isFinite(eta) ? `${fmtNum(eta, 1)}с  сближ ${fmtNum(closing, 0)}` : `не рассчитано`);
   }
   ctx.restore();
 }
 
 function labelOf(b) {
-  if (!b) return 'none';
+  if (!b) return 'нет';
   if (b.kind === 'star') return b.label || b.class || 'STAR';
   if (b.kind === 'blackhole') return 'BH';
   return b.label || b.kind.toUpperCase();
@@ -3018,6 +3398,9 @@ function drawOverlay(title, subtitle, action) {
         ctx.fillStyle = 'rgba(238,246,255,.34)';
         ctx.font = '9px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
         ctx.fillText(`поле ${fmtNum(d.gravity, 2)} · дальн. ${fmtNum(d.targetMax, 2)}`, tx, r.y + r.h - 15);
+        ctx.fillStyle = 'rgba(255,214,145,.38)';
+        ctx.font = '9px ui-sans-serif, system-ui';
+        ctx.fillText(`${d.riskText} · ${d.rewardText}`, tx, r.y + r.h - 30);
       } else {
         ctx.textAlign = 'right';
         ctx.fillStyle = 'rgba(238,246,255,.34)';
@@ -3051,7 +3434,7 @@ function drawOverlay(title, subtitle, action) {
 
     ctx.fillStyle = 'rgba(238,246,255,.34)';
     ctx.font = '10px ui-sans-serif, system-ui';
-    const controls = narrow ? 'держи экран: тяга · двумя пальцами: масштаб' : 'держи мышь/экран: тяга · отпусти: полёт по инерции · R цель · G поле · N навигация';
+    const controls = narrow ? 'удерживай экран: двигатель · двумя пальцами меняй масштаб' : 'удерживай мышь или экран: двигатель · отпусти: полёт по инерции · R смена цели · G поле гравитации · N навигация';
     ctx.fillText(controls, W / 2, y + boxH - 12);
   } else {
     const summaryY = y + 108;
