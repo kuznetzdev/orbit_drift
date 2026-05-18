@@ -89,12 +89,17 @@ function drawMetricBar(x, y, w, label, value, hue, valueText = '') {
 function objectiveVerb(obj) {
   if (!obj) return 'выбери цель';
   if (obj.type === 'orbit') return 'держи ровную орбиту';
-  if (obj.type === 'sling') return 'разгонись у поля';
+  if (obj.type === 'sling') return 'разгонись в поле';
   if (obj.type === 'skim') return 'быстро пройди у звезды';
   if (obj.type === 'rendezvous') return 'догоняй и выравнивай скорость';
   if (obj.type === 'tide') return 'подойди близко, но не сорвись';
   if (obj.type === 'silent') return 'пройди кольцо без тяги';
   return 'пролети через кольцо';
+}
+
+function objectiveMetaText(obj) {
+  if (!obj) return '';
+  return `риск: ${obj.risk || 'обычный'} · награда: ${obj.reward || '+' + (obj.bonus || 0)}`;
 }
 
 function drawScorePanel(x, y, compact) {
@@ -120,7 +125,7 @@ function drawScorePanel(x, y, compact) {
 function drawObjectivePanel(x, y, compact) {
   if (!objective || !target) return { x, y, w: 0, h: 0 };
   const w = Math.min(compact ? W - x * 2 : 396, W - x * 2);
-  const h = compact ? 78 : 96;
+  const h = compact ? 84 : 106;
   drawSoftPanel(x, y, w, h, 16, .48);
   ctx.textAlign = 'left';
   ctx.textBaseline = 'top';
@@ -131,6 +136,11 @@ function drawObjectivePanel(x, y, compact) {
   ctx.fillStyle = 'rgba(238,246,255,.46)';
   ctx.font = '11px ui-sans-serif, system-ui';
   drawWrappedText(objective.hint, x + 14, y + (compact ? 40 : 43), w - 28, compact ? 13 : 14, compact ? 1 : 2);
+  if (!compact) {
+    ctx.fillStyle = 'rgba(255,214,145,.54)';
+    ctx.font = '10px ui-sans-serif, system-ui';
+    ctx.fillText(objectiveMetaText(objective), x + 14, y + 65);
+  }
   const d = worldDistanceToTarget();
   ctx.fillStyle = `hsla(${target.hue}, 94%, 78%, .66)`;
   ctx.font = '10px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
@@ -153,9 +163,9 @@ function drawShipPanel(compact) {
   ctx.font = '700 10px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
   ctx.fillText('КОРАБЛЬ', x + 12, y + 11);
   const bw = w - 24;
-  drawMetricBar(x + 12, y + 30, bw, 'тяга', player.fuel / player.maxFuel, 196, `${Math.round(player.fuel)}%`);
+  drawMetricBar(x + 12, y + 30, bw, 'топливо', player.fuel / player.maxFuel, 196, `${Math.round(player.fuel)}%`);
   drawMetricBar(x + 12, y + 56, bw, 'нагрев', player.heat, 18, `${Math.round(player.heat * 100)}%`);
-  drawMetricBar(x + 12, y + 82, bw, 'корпус', player.stress || 0, 270, `${Math.round((player.stress || 0) * 100)}%`);
+  drawMetricBar(x + 12, y + 82, bw, 'нагрузка', player.stress || 0, 270, `${Math.round((player.stress || 0) * 100)}%`);
   if (!compact) drawMetricBar(x + 12, y + 108, bw, 'инерция', player.driftCharge / 10, 255, `${Math.round(player.driftCharge * 10)}%`);
   return { x, y, w, h };
 }
@@ -177,6 +187,15 @@ function drawPlayHud() {
     ctx.font = '600 12px ui-sans-serif, system-ui';
     ctx.fillText(gravityAdvice, W / 2, H - (W < 560 ? 78 : 70));
   }
+
+  if (tutorialHintTime > 0 && tutorialHint) {
+    const hintW = Math.min(260, W - 36);
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'top';
+    ctx.fillStyle = 'rgba(238,246,255,.62)';
+    ctx.font = '600 12px ui-sans-serif, system-ui';
+    drawWrappedText(tutorialHint, W / 2 - hintW / 2, H - (W < 560 ? 108 : 100), hintW, 15, 2);
+  }
 }
 
 function drawHud() {
@@ -195,7 +214,7 @@ function drawHud() {
   }
 
   if (state === 'menu') drawOverlay('ORBIT DRIFT', 'Лети от звезды к звезде. Гравитация меняет курс.', 'В полёт');
-  if (state === 'dead') drawOverlay('Корабль потерян', message || 'Связь с кораблём потеряна', 'Ещё запуск');
+  if (state === 'dead') drawOverlay('Миссия провалена', message || 'Связь потеряна', 'Начать заново');
   ctx.restore();
 }
 
@@ -241,22 +260,24 @@ function drawNavPanel() {
     yy += compact ? 15 : 17;
   };
   ctx.fillStyle = 'rgba(149,228,255,.82)';
-  ctx.fillText('НАВИГАЦИЯ · ВЕКТОРЫ', x + 14, yy);
+  ctx.fillText('НАВИГАЦИЯ · ПОЛЁТ', x + 14, yy);
   yy += compact ? 17 : 20;
-  if (objective && target) line('ЦЕЛЬ', `${objective.code}  ${labelOf(target)}  сигнал ${fmtNum(navSignal, 2)}`, target.hue);
-  line('POS', `X ${fmtSigned(player.x / 1000, 2)}  Y ${fmtSigned(player.y / 1000, 2)}`);
-  line('VEL', `${fmtSigned(player.vx, 0)} ${fmtSigned(player.vy, 0)}  |v| ${fmtNum(speed, 0)}`);
-  line('ACC', `${fmtNum(hypot(g.ax, g.ay), 2)} g*  ${dom ? labelOf(dom) : 'none'}  MAP ${gravityLayer ? 'on' : 'off'}`, dom ? dom.hue : null);
+  if (objective && target) {
+    line('ЦЕЛЬ', compact ? `${objective.code}  ${objective.risk || 'риск'}` : `${objective.code}  ${labelOf(target)}  ${objective.risk || 'риск'} / ${objective.reward || '+'}`, target.hue);
+  }
+  line('ПОЗИЦИЯ', `X ${fmtSigned(player.x / 1000, 2)}  Y ${fmtSigned(player.y / 1000, 2)}`);
+  line('СКОРОСТЬ', `${fmtSigned(player.vx, 0)} ${fmtSigned(player.vy, 0)}  |v| ${fmtNum(speed, 0)}`);
+  line('ПРИТЯЖ.', `${fmtNum(hypot(g.ax, g.ay), 2)} g*  ${dom ? labelOf(dom) : 'нет'}  карта ${gravityLayer ? 'вкл' : 'выкл'}`, dom ? dom.hue : null);
   if (!compact) {
-    line('ПОЛЕ', `помощь +${Math.round((player.gravBoost || 0) * 100)}%  радиус ${dom ? fmtNum(dom.field || 0, 0) : '0'}м`, dom ? dom.hue : null);
-    line('ПРОИЗВ', `${fmtNum(perf.fps, 0)}fps  тел ${bodies.length}  G ${perf.gravSources}  линий ${perf.fieldLines}`, 205);
-    line('КАРТА', `${mapCode}  zoom ${fmtNum(userZoom, 2)}x  DPR ${fmtNum(DPR, 1)}`, 205);
-    line('ИЗЛУЧ', `${fmtNum(rad.flux, 2)}  ветер ${fmtNum(wind.mag, 2)}  нагрев ${fmtNum(player.heat, 2)}`, rad.body ? rad.body.hue : null);
-    line('КОРПУС', `${fmtNum(tide.stress, 3)}  риск ${fmtNum(player.stress || 0, 2)}  топл ${fmtNum(player.fuel / player.maxFuel, 2)}`, tide.body ? tide.body.hue : null);
+    line('ПОЛЕ', `усиление +${Math.round((player.gravBoost || 0) * 100)}%  радиус ${dom ? fmtNum(dom.field || 0, 0) : '0'}м`, dom ? dom.hue : null);
+    line('СИСТЕМА', `${fmtNum(perf.fps, 0)} кадр/с  тел ${bodies.length}  G ${perf.gravSources}  линий ${perf.fieldLines}`, 205);
+    line('КАРТА', `${mapCode}  масштаб ${fmtNum(userZoom, 2)}x  DPR ${fmtNum(DPR, 1)}`, 205);
+    line('ИЗЛУЧЕНИЕ', `${fmtNum(rad.flux, 2)}  ветер ${fmtNum(wind.mag, 2)}  нагрев ${fmtNum(player.heat, 2)}`, rad.body ? rad.body.hue : null);
+    line('НАГРУЗКА', `${fmtNum(tide.stress, 3)}  риск ${fmtNum(player.stress || 0, 2)}  топливо ${fmtNum(player.fuel / player.maxFuel, 2)}`, tide.body ? tide.body.hue : null);
   }
   if (dom && orb) {
     line('ТЕЛО', `${labelOf(dom)}  M ${fmtNum(dom.mass || 0, 2)}  μ ${fmtNum(dom.mu / 1000, 1)}`, dom.hue);
-    if (!compact && dom.soi) line('SOI', `${fmtNum(dom.soi, 0)}м  плотн ${fmtNum(dom.densityCode || 0, 4)}`);
+    if (!compact && dom.soi) line('СФЕРА', `${fmtNum(dom.soi, 0)}м  плотн ${fmtNum(dom.densityCode || 0, 4)}`);
     const apo = isFinite(orb.apo) ? fmtNum(orb.apo, 0) : 'escape';
     line('ОРБИТА', `e ${fmtNum(orb.ecc, 2)}  pe ${fmtNum(orb.peri, 0)}  ap ${apo}`);
     if (!compact) line('ЗАХВАТ', `vc ${fmtNum(orb.circular, 0)}  ve ${fmtNum(orb.escape, 0)}  q ${fmtNum(orb.quality, 2)}`);
@@ -269,13 +290,13 @@ function drawNavPanel() {
     const closing = -((player.vx - (target.vx || 0)) * dx + (player.vy - (target.vy || 0)) * dy) / Math.max(d, 1);
     const eta = closing > 8 ? d / closing : Infinity;
     line('ЦЕЛЬ', `${labelOf(target)}  ${fmtNum(d, 0)}м  курс ${fmtNum(bearing, 0)}°`, target.hue);
-    if (!compact) line('ETA', isFinite(eta) ? `${fmtNum(eta, 1)}с  сближ ${fmtNum(closing, 0)}` : `нет решения`);
+    if (!compact) line('ДО СБЛИЖ.', isFinite(eta) ? `${fmtNum(eta, 1)}с  сближ ${fmtNum(closing, 0)}` : `не рассчитано`);
   }
   ctx.restore();
 }
 
 function labelOf(b) {
-  if (!b) return 'none';
+  if (!b) return 'нет';
   if (b.kind === 'star') return b.label || b.class || 'STAR';
   if (b.kind === 'blackhole') return 'BH';
   return b.label || b.kind.toUpperCase();
@@ -505,6 +526,9 @@ function drawOverlay(title, subtitle, action) {
         ctx.fillStyle = 'rgba(238,246,255,.34)';
         ctx.font = '9px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
         ctx.fillText(`поле ${fmtNum(d.gravity, 2)} · дальн. ${fmtNum(d.targetMax, 2)}`, tx, r.y + r.h - 15);
+        ctx.fillStyle = 'rgba(255,214,145,.38)';
+        ctx.font = '9px ui-sans-serif, system-ui';
+        ctx.fillText(`${d.riskText} · ${d.rewardText}`, tx, r.y + r.h - 30);
       } else {
         ctx.textAlign = 'right';
         ctx.fillStyle = 'rgba(238,246,255,.34)';
@@ -538,7 +562,7 @@ function drawOverlay(title, subtitle, action) {
 
     ctx.fillStyle = 'rgba(238,246,255,.34)';
     ctx.font = '10px ui-sans-serif, system-ui';
-    const controls = narrow ? 'держи экран: тяга · двумя пальцами: масштаб' : 'держи мышь/экран: тяга · отпусти: полёт по инерции · R цель · G поле · N навигация';
+    const controls = narrow ? 'удерживай экран: двигатель · двумя пальцами меняй масштаб' : 'удерживай мышь или экран: двигатель · отпусти: полёт по инерции · R смена цели · G поле гравитации · N навигация';
     ctx.fillText(controls, W / 2, y + boxH - 12);
   } else {
     const summaryY = y + 108;
