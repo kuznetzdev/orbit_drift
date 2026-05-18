@@ -11,6 +11,7 @@ function update(dt) {
   frame++;
   if (messageTime > 0 && messageTime < 90) messageTime -= dt;
   if (gravityAdviceTime > 0) gravityAdviceTime -= dt;
+  if (tutorialHintTime > 0) tutorialHintTime -= dt;
   updateBodies(dt);
   if (state === 'play') updateGame(dt);
   else setEngineAudio(false, 0);
@@ -33,7 +34,8 @@ function updateGame(dt) {
   const gravityBurn = clamp(Math.log1p(preG.mag) / 9.6, 0, .55);
 
   const turnRate = 3.85;
-  if (pointer.has && performance.now() - pointer.last < 4500) {
+  const pointerAimActive = pointer.has && performance.now() - pointer.last < Math.max(0, difficultyNumber('autoAimMs', 4500));
+  if (pointerAimActive) {
     const desired = Math.atan2(pointer.wy - player.y, pointer.wx - player.x);
     player.angle += clamp(angleDiff(player.angle, desired), -turnRate * dt, turnRate * dt);
   }
@@ -112,8 +114,8 @@ function updateGame(dt) {
     player.vy *= k;
   }
 
-  if (!pointer.has && speed > 18 && !left && !right) {
-    player.angle += angleDiff(player.angle, Math.atan2(player.vy, player.vx)) * .02;
+  if (!pointerAimActive && speed > 18 && !left && !right) {
+    player.angle += angleDiff(player.angle, Math.atan2(player.vy, player.vx)) * difficultyNumber('autoAlignK', .02);
   }
 
   player.trail.push({ x: player.x, y: player.y, speed, heat: player.heat });
@@ -121,6 +123,7 @@ function updateGame(dt) {
 
   checkCollisionsAndScans(dt);
   checkLagrangeNodes(dt);
+  updateTutorialHints(thrusting, brakeInput);
 
   const lookX = player.x + player.vx * .33;
   const lookY = player.y + player.vy * .33;
@@ -129,6 +132,29 @@ function updateGame(dt) {
   camera.shake = Math.max(0, camera.shake - dt * 25);
   const baseZoom = W < 700 ? .88 : 1;
   camera.zoom = lerp(camera.zoom, baseZoom * userZoom, .040);
+}
+
+function showTutorialHint(text, duration = 2.4) {
+  tutorialHint = text;
+  tutorialHintTime = duration;
+}
+
+function updateTutorialHints(thrusting, brakeInput) {
+  if (!player || state !== 'play' || score > 8) return;
+  if (tutorialHintTime > 0) return;
+  if (tutorialStage === 0 && time > 1.0) {
+    tutorialStage = 1;
+    showTutorialHint('Тяга меняет курс. Отпускай её, чтобы поле вело корабль дальше.');
+  } else if (tutorialStage === 1 && target && worldDistanceToTarget() < 1700) {
+    tutorialStage = 2;
+    showTutorialHint('Кольцо цели даёт очки. Чище дуга — выше награда.');
+  } else if (tutorialStage === 2 && player.noThrustTime > 1.4 && player.driftCharge > 1.2) {
+    tutorialStage = 3;
+    showTutorialHint('Инерция копит заряд дуги. Риск окупается, пока нагрев и нагрузка в норме.');
+  } else if (tutorialStage === 3 && (player.heat > .45 || player.stress > .45 || brakeInput || thrusting)) {
+    tutorialStage = 4;
+    showTutorialHint('Следи за нагревом и нагрузкой. Красные шкалы требуют выхода из поля.');
+  }
 }
 
 function updateGravityFlow(g, dt) {
@@ -175,11 +201,11 @@ function detectGravityAssist(g, dt) {
       score += points;
       best = Math.max(best, score);
       saveBest();
-      texts.push({ x: player.x, y: player.y - 22, text: `манёвр +${points}`, hue: b.hue, life: 1.2, max: 1.2 });
+      texts.push({ x: player.x, y: player.y - 22, text: `гравиманёвр +${points}`, hue: b.hue, life: 1.2, max: 1.2 });
       burst(player.x, player.y, 30, b.hue, .55);
       soundCue('assist', b, points);
       lastAssistBody = b.id;
-      message = 'Поле разогнало корабль';
+      message = 'Гравитация добавила скорость';
       messageTime = .9;
       completeSlingObjective(b, points);
     }
@@ -206,10 +232,18 @@ function updateThermalAndFuel(dt) {
     particles.push({ x: player.x + rnd(Math.random, -12, 12), y: player.y + rnd(Math.random, -12, 12), vx: rnd(Math.random, -18, 18), vy: rnd(Math.random, -18, 18), size: rnd(Math.random, 1, 2.5), hue: tide.body.hue || 255, life: .28, max: .28, drag: .92 });
   }
 
+  const heatRisk = player.heat > .72;
+  const stressRisk = player.stress > .72;
   warningClock = Math.max(0, warningClock - dt);
-  if (warningClock <= 0 && (player.heat > .72 || player.stress > .72)) {
-    warningClock = .52;
+  if (warningClock <= 0 && (heatRisk || stressRisk)) {
+    warningClock = .62;
     soundCue('warn');
+    if (messageTime <= .16 || (message && message.startsWith('Риск:'))) {
+      message = heatRisk && stressRisk
+        ? 'Риск: перегрев и перегрузка'
+        : (heatRisk ? 'Риск: перегрев' : 'Риск: перегрузка');
+      messageTime = .78;
+    }
   }
 
   if (player.heat >= 1) endGame('Корабль перегрелся у звезды');
@@ -267,10 +301,10 @@ function checkLagrangeNodes(dt) {
     chain += 1;
     best = Math.max(best, score);
     saveBest();
-    player.fuel = clamp(player.fuel + 20 + speedBonus * 4, 0, player.maxFuel);
+    player.fuel = clamp(player.fuel + (20 + speedBonus * 4) * difficultyNumber('rewardFuelMul', 1), 0, player.maxFuel);
     player.driftCharge = clamp(player.driftCharge + 1.5, 0, 10);
-    player.heat = Math.max(0, player.heat - .05);
-    player.stress = Math.max(0, (player.stress || 0) - .04);
+    player.heat = Math.max(0, player.heat - .05 * difficultyNumber('rewardHeatReliefMul', 1));
+    player.stress = Math.max(0, (player.stress || 0) - .04 * difficultyNumber('rewardStressReliefMul', 1));
     texts.push({ x: n.x, y: n.y - 24, text: `${n.label} точка +${gained}`, hue: n.hue, life: 1.45, max: 1.45 });
     burst(n.x, n.y, 44, n.hue, .72);
     soundCue('node', n.body, n.label === 'L4' ? 1 : 2);
@@ -297,10 +331,10 @@ function checkCollisionsAndScans(dt) {
     if (b.kind !== 'blackhole' && !b.home && !b.visited && b.scanCooldown <= 0) {
       const band = Math.abs(d - b.scan) < b.scanWidth * difficulty.scanEase;
       const speed = hypot(player.vx - (b.vx || 0), player.vy - (b.vy || 0));
-      const safeSpeed = speed > 78;
+      const safeSpeed = speed > difficultyNumber('scanMinSpeed', 78);
       if (band && safeSpeed && now - player.lastScanAt > .62) {
         const q = orbitalElements(b);
-        scanBody(b, q && q.quality > .76, q ? q.quality : 0, speed, d);
+        scanBody(b, q && q.quality > difficultyNumber('perfectQuality', .76), q ? q.quality : 0, speed, d);
         return;
       }
     }
@@ -327,11 +361,11 @@ function scanBody(body, perfect, quality, relSpeed = 0, distance = 0) {
   saveBest();
 
   const fuelBonus = body.kind === 'star' ? 16 : (body.kind === 'comet' ? 10 : 24);
-  player.fuel = clamp(player.fuel + fuelBonus + perfectBonus * 4, 0, player.maxFuel);
-  player.heat = Math.max(0, player.heat - (perfect ? .13 : .07));
-  player.stress = Math.max(0, (player.stress || 0) - .08);
+  player.fuel = clamp(player.fuel + (fuelBonus + perfectBonus * 4) * difficultyNumber('rewardFuelMul', 1), 0, player.maxFuel);
+  player.heat = Math.max(0, player.heat - (perfect ? .13 : .07) * difficultyNumber('rewardHeatReliefMul', 1));
+  player.stress = Math.max(0, (player.stress || 0) - .08 * difficultyNumber('rewardStressReliefMul', 1));
 
-  const label = body.target && obj.label ? `${obj.label} +${gained}` : (perfect ? `орбита +${gained}` : `данные +${gained}`);
+  const label = body.target && obj.label ? `${obj.label} +${gained}` : (perfect ? `орбита +${gained}` : `скан +${gained}`);
   texts.push({ x: body.x, y: body.y - body.r - 34, text: label, hue: body.hue, life: 1.35, max: 1.35 });
   burst(body.x, body.y, perfect || obj.ok ? 86 : 54, body.hue, perfect || obj.ok ? 1.25 : .88);
   camera.shake = Math.max(camera.shake, perfect || obj.ok ? 7 : 4);
@@ -340,9 +374,9 @@ function scanBody(body, perfect, quality, relSpeed = 0, distance = 0) {
 
   player.driftCharge = Math.max(0, player.driftCharge - 3.0);
   if (body.target && objective) {
-    message = obj.ok ? `${objective.title}: выполнено` : `${objective.title}: частичный проход`;
+    message = obj.ok ? `${objective.title}: выполнено` : `${objective.title}: частично выполнено`;
   } else {
-    message = perfect ? 'Орбита стабилизирована' : `Сигнал считан: ${labelOf(body)}`;
+    message = perfect ? 'Орбита стабилизирована' : `Скан завершён: ${labelOf(body)}`;
   }
   messageTime = .95;
 

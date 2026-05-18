@@ -6,6 +6,114 @@
 
 'use strict';
 
+function orbitSpeedAround(parentMu, orbitA, rng, minMul = .96, maxMul = 1.04) {
+  if (!parentMu || !orbitA) return 0;
+  const base = Math.sqrt(parentMu / Math.max(orbitA * orbitA * orbitA, 1));
+  const dir = rng() < .5 ? -1 : 1;
+  return base * rnd(rng, minMul, maxMul) * dir;
+}
+
+function localEccentricityCap(orbitA, innerOrbit, outerOrbit, hardCap = .16) {
+  const innerGap = Math.max(40, orbitA - (innerOrbit || (orbitA - 220)));
+  const outerGap = Math.max(40, (outerOrbit || (orbitA + innerGap)) - orbitA);
+  const localGap = Math.min(innerGap, outerGap);
+  const capFromGap = clamp((localGap / Math.max(orbitA, 1)) * .46, .012, hardCap);
+  return capFromGap;
+}
+
+function sTypeStabilityLimit(hostMass, companionMass, binaryA, binaryE) {
+  if (!hostMass || !companionMass || !binaryA) return Infinity;
+  const mu = companionMass / Math.max(hostMass + companionMass, .000001);
+  const e = clamp(binaryE || 0, 0, .8);
+  const ratio = clamp(
+    0.464 - 0.380 * mu - 0.631 * e + 0.586 * mu * e + 0.150 * e * e - 0.198 * mu * e * e,
+    0.08,
+    0.58
+  );
+  return binaryA * ratio;
+}
+
+function stableOrbitCeiling(star, companion) {
+  if (!companion) return Infinity;
+  return sTypeStabilityLimit(star.mass, companion.mass, companion.orbitA, companion.orbitE) * .97;
+}
+
+function systemBaseOrbit(star) {
+  return star.scan + (star.family === 'redgiant' ? 280 : 150);
+}
+
+function buildPlanetOrbitPlan(star, rng, planetCount, extreme = false) {
+  const baseOrbit = systemBaseOrbit(star);
+  const plan = [];
+  const brown = star.family === 'brown';
+  let orbitA = baseOrbit + rnd(rng, extreme ? 18 : 24, extreme ? 220 : 180);
+  for (let i = 0; i < planetCount; i++) {
+    if (i > 0) {
+      const minStep = brown ? 120 : 165;
+      const maxStep = brown ? 220 : 310;
+      orbitA += rnd(rng, minStep * (extreme ? .78 : 1), maxStep * (extreme ? 1.38 : 1));
+    }
+    plan.push(orbitA);
+  }
+  return { baseOrbit, plan };
+}
+
+function stablePlanetOrbits(star, companion, orbitPlan) {
+  const stableMaxOrbit = stableOrbitCeiling(star, companion);
+  const usable = [];
+  for (const orbit of orbitPlan) {
+    if (star.heatRadius > 0 && orbit < star.heatRadius * .45 && star.luminosity > 50) continue;
+    if (orbit > stableMaxOrbit) continue;
+    usable.push(orbit);
+  }
+  return usable;
+}
+
+function addPlanetsOnOrbits(star, orbits, baseOrbit, rng, extreme = false) {
+  const planets = [];
+  for (let i = 0; i < orbits.length; i++) {
+    const orbit = orbits[i];
+    const inner = i > 0 ? orbits[i - 1] : Math.min(baseOrbit, orbit - 80);
+    const outer = i + 1 < orbits.length ? orbits[i + 1] : orbit + (orbit - inner);
+    const hardCap = star.family === 'redgiant' ? .18 : (extreme ? .17 : .13);
+    const eCap = localEccentricityCap(orbit, inner, outer, hardCap);
+    planets.push(addPlanet(star, orbit, rng() * TAU, rng, false, { maxEcc: eCap }));
+  }
+  return planets;
+}
+
+function populateSystemBodies(star, companion, rng, options = {}) {
+  const canHavePlanets = star.family !== 'neutron' && star.family !== 'whitedwarf';
+  const extreme = options.extreme ?? (rng() < .035 && star.family === 'main');
+  const maxPlanets = options.maxPlanets || (star.family === 'brown' ? 3 : (extreme ? 6 : 5));
+  const minPlanets = options.minPlanets || (canHavePlanets ? 1 : 0);
+  const rawCount = canHavePlanets
+    ? minPlanets + Math.floor(rng() * Math.max(1, maxPlanets - minPlanets + 1))
+    : Math.floor(rng() * 2);
+  const { baseOrbit, plan } = buildPlanetOrbitPlan(star, rng, rawCount, extreme);
+  const usableOrbits = stablePlanetOrbits(star, companion, plan);
+  if (!usableOrbits.length && companion && canHavePlanets) {
+    const compactMin = star.scan + 70;
+    const compactMax = stableOrbitCeiling(star, companion) * .92;
+    if (compactMax > compactMin) usableOrbits.push(rnd(rng, compactMin, compactMax));
+  }
+  const planets = addPlanetsOnOrbits(star, usableOrbits, baseOrbit, rng, extreme);
+  const outerAnchor = usableOrbits.length ? usableOrbits[usableOrbits.length - 1] : (baseOrbit + rnd(rng, 220, 420));
+
+  if ((options.allowBelts !== false) && rng() < (extreme ? .58 : .45) && star.family !== 'neutron') {
+    const beltR = outerAnchor + rnd(rng, 120, extreme ? 420 : 300);
+    const n = 3 + Math.floor(rng() * (extreme ? 11 : 8));
+    for (let i = 0; i < n; i++) addAsteroid(star, beltR + rnd(rng, -72, 82), rng() * TAU, rng);
+  }
+  if ((options.allowComets !== false) && rng() < (extreme ? .24 : .18) && star.family === 'main') {
+    const n = rng() < (extreme ? .48 : .35) ? 2 : 1;
+    const cometMin = Math.max(outerAnchor + 260, 760);
+    const cometMax = Math.max(cometMin + 260, outerAnchor + (extreme ? 1320 : 960));
+    for (let i = 0; i < n; i++) addComet(star, rnd(rng, cometMin, cometMax), rng() * TAU, rng);
+  }
+  return { planets, outerAnchor, extreme };
+}
+
 function starStats(profile, rng) {
   if (profile.family === 'main') {
     const d = MAIN_SEQUENCE[profile.class];
@@ -98,14 +206,23 @@ function addCompanionStar(parent, profile, orbitR, angle, rng) {
   const comp = addStar(profile, parent.x + Math.cos(angle) * orbitR, parent.y + Math.sin(angle) * orbitR, rng);
   comp.parentId = parent.id;
   comp.orbitA = orbitR;
-  comp.orbitE = rnd(rng, .015, .18);
+  comp.orbitE = rnd(rng, .02, .16);
   comp.orbitArg = rng() * TAU;
   comp.orbitAngle = angle;
-  comp.orbitSpeed = Math.sqrt((parent.mu + comp.mu) / Math.max(orbitR * orbitR * orbitR, 1)) * rnd(rng, .72, 1.06) * (rng() < .5 ? -1 : 1);
+  comp.orbitSpeed = orbitSpeedAround(parent.mu + comp.mu, orbitR, rng, .965, 1.035);
   comp.label = (comp.label || comp.class || 'ST') + '·B';
   comp.scan *= .88;
   comp.field = Math.min(comp.field, Math.max(2600, orbitR * 3.25));
   comp.binary = true;
+  parent.binary = true;
+  parent.binaryCompanionId = comp.id;
+  parent.binaryOrbitA = orbitR;
+  parent.binaryOrbitE = comp.orbitE;
+  parent.binaryCompanionMass = comp.mass;
+  comp.binaryPrimaryId = parent.id;
+  comp.binaryOrbitA = orbitR;
+  comp.binaryOrbitE = comp.orbitE;
+  comp.binaryCompanionMass = parent.mass;
   return comp;
 }
 
@@ -120,12 +237,16 @@ function choosePlanetType(rng, parent) {
   return chooseWeighted(pool, rng);
 }
 
-function addPlanet(parent, orbitR, angle, rng, home = false) {
+function addPlanet(parent, orbitR, angle, rng, home = false, orbitTuning = null) {
   const t = home ? PLANET_TYPES[3] : choosePlanetType(rng, parent);
   const mass = rnd(rng, t.mass[0], t.mass[1]) * (home ? 1.25 : 1);
   const radius = rnd(rng, t.radius[0], t.radius[1]) * (home ? 1.12 : 1);
   const hue = rnd(rng, t.hue[0], t.hue[1]);
-  const e = home ? .02 : rnd(rng, 0, parent && parent.family === 'redgiant' ? .20 : .12);
+  const defaultEmax = parent && parent.family === 'redgiant' ? .20 : .12;
+  const tunedEmax = orbitTuning && Number.isFinite(orbitTuning.maxEcc)
+    ? clamp(orbitTuning.maxEcc, .01, defaultEmax)
+    : defaultEmax;
+  const e = home ? .02 : rnd(rng, 0, tunedEmax);
   const arg = rng() * TAU;
   const mu = G * mass;
   const body = {
@@ -159,7 +280,7 @@ function addPlanet(parent, orbitR, angle, rng, home = false) {
     orbitE: e,
     orbitArg: arg,
     orbitAngle: angle,
-    orbitSpeed: parent ? Math.sqrt(parent.mu / Math.max(orbitR * orbitR * orbitR, 1)) * rnd(rng, .82, 1.08) * (rng() < .5 ? -1 : 1) : 0,
+    orbitSpeed: parent ? orbitSpeedAround(parent.mu, orbitR, rng, .96, 1.045) : 0,
     soi: parent ? clamp(orbitR * Math.pow(mass / Math.max(parent.mass * 3, .001), 1 / 3) * 5.8, radius * 14.0, 3600) : 2400,
     ring: rng() < t.ring || home,
     scanCooldown: 0,
@@ -199,10 +320,10 @@ function addAsteroid(parent, orbitR, angle, rng) {
     sides: 5 + Math.floor(rng() * 4),
     parentId: parent ? parent.id : 0,
     orbitA: parent ? orbitR : 0,
-    orbitE: rnd(rng, .02, .22),
+    orbitE: rnd(rng, .02, .14),
     orbitArg: rng() * TAU,
     orbitAngle: angle,
-    orbitSpeed: parent ? Math.sqrt(parent.mu / Math.max(orbitR * orbitR * orbitR, 1)) * rnd(rng, .9, 1.3) * (rng() < .5 ? -1 : 1) : 0,
+    orbitSpeed: parent ? orbitSpeedAround(parent.mu, orbitR, rng, .95, 1.08) : 0,
     soi: parent ? clamp(orbitR * Math.pow(mass / Math.max(parent.mass * 3, .001), 1 / 3) * 3.1, r * 7.5, 620) : 430,
     scanCooldown: 0,
     gravitates: true
@@ -238,10 +359,10 @@ function addComet(parent, orbitA, angle, rng) {
     spin: rnd(rng, -.5, .5),
     parentId: parent ? parent.id : 0,
     orbitA,
-    orbitE: rnd(rng, .48, .78),
+    orbitE: rnd(rng, .46, .72),
     orbitArg: rng() * TAU,
     orbitAngle: angle,
-    orbitSpeed: parent ? Math.sqrt(parent.mu / Math.max(orbitA * orbitA * orbitA, 1)) * rnd(rng, .65, 1.12) * (rng() < .5 ? -1 : 1) : 0,
+    orbitSpeed: parent ? orbitSpeedAround(parent.mu, orbitA, rng, .92, 1.08) : 0,
     soi: parent ? clamp(orbitA * Math.pow(mass / Math.max(parent.mass * 3, .001), 1 / 3) * 3.0, 96, 680) : 460,
     scanCooldown: 0,
     gravitates: true
@@ -307,28 +428,20 @@ function ensureChunk(cx, cy) {
     const y = cy * CHUNK + rnd(rng, 290, CHUNK - 290);
     if (!tooCloseToExisting(x, y, 720)) {
       const depth = Math.floor(originDistance / CHUNK);
-      const star = addStar(chooseStellarProfile(rng, depth), x, y, rng);
+      const environment = stellarEnvironmentBias(cx, cy);
+      const star = addStar(chooseStellarProfile(rng, depth, environment), x, y, rng);
+      let companion = null;
       if (rng() < .22 && star.family === 'main' && star.mass < 2.8) {
-        const companionProfile = rng() < .82 ? { family: 'main', class: chooseMainClass(rng, depth + 4) } : chooseStellarProfile(rng, depth + 4);
-        if (companionProfile.family !== 'neutron') addCompanionStar(star, companionProfile, rnd(rng, 520, 980), rng() * TAU, rng);
+        const companionEnv = clamp(environment + rnd(rng, -.22, .22), -1, 1);
+        const companionProfile = rng() < .82
+          ? { family: 'main', class: chooseMainClass(rng, depth + 4, companionEnv) }
+          : chooseStellarProfile(rng, depth + 4, companionEnv);
+        if (companionProfile.family !== 'neutron') {
+          companion = addCompanionStar(star, companionProfile, rnd(rng, 520, 980), rng() * TAU, rng);
+        }
       }
-      const canHavePlanets = star.family !== 'neutron' && star.family !== 'whitedwarf';
-      const planetCount = canHavePlanets ? 1 + Math.floor(rng() * (star.family === 'brown' ? 3 : 5)) : Math.floor(rng() * 2);
-      const baseOrbit = star.scan + (star.family === 'redgiant' ? 280 : 150) + rng() * 150;
-      for (let p = 0; p < planetCount; p++) {
-        const orbit = baseOrbit + p * rnd(rng, 170, 300) + rng() * 90;
-        if (star.heatRadius > 0 && orbit < star.heatRadius * .45 && star.luminosity > 50) continue;
-        addPlanet(star, orbit, rng() * TAU, rng);
-      }
-      if (rng() < .45 && star.family !== 'neutron') {
-        const beltR = baseOrbit + planetCount * rnd(rng, 170, 260) + rnd(rng, 40, 220);
-        const n = 3 + Math.floor(rng() * 8);
-        for (let i = 0; i < n; i++) addAsteroid(star, beltR + rnd(rng, -80, 90), rng() * TAU, rng);
-      }
-      if (rng() < .18 && star.family === 'main') {
-        const n = rng() < .35 ? 2 : 1;
-        for (let i = 0; i < n; i++) addComet(star, rnd(rng, 800, 1400), rng() * TAU, rng);
-      }
+
+      populateSystemBodies(star, companion, rng);
     }
   }
 
@@ -365,10 +478,16 @@ function ensureChunksAround(x, y, range = 3) {
 function cleanupFarBodies() {
   if (!player || bodies.length < (lowPower ? 58 : 82)) return;
   const keepDistance = lowPower ? 5200 : 7000;
-  bodies = bodies.filter(b => {
-    if (b.home || b.target || b.id === (target && target.id)) return true;
-    return hypot(b.x - player.x, b.y - player.y) < keepDistance;
-  });
+  let write = 0;
+  for (let read = 0; read < bodies.length; read++) {
+    const b = bodies[read];
+    const keep = b.home
+      || b.target
+      || b.id === (target && target.id)
+      || hypot(b.x - player.x, b.y - player.y) < keepDistance;
+    if (keep) bodies[write++] = b;
+  }
+  bodies.length = write;
 }
 
 function newWorldSeed() {

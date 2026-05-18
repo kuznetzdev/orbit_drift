@@ -32,6 +32,9 @@ function setupWorld(preview = false) {
   flowAwardLevel = 0;
   warningClock = 0;
   visitedNodes = new Set();
+  tutorialHint = '';
+  tutorialHintTime = 0;
+  tutorialStage = 0;
 
   const homeStar = addStar({ family: 'main', class: 'G' }, 0, 0, Math.random);
   homeStar.home = true;
@@ -110,6 +113,20 @@ function endGame(reason) {
   soundCue('fail');
 }
 
+function routeBodyRisk(body) {
+  return clamp(
+    (body.kind === 'comet' ? .34 : 0)
+    + (body.kind === 'asteroid' ? .10 : 0)
+    + (body.binary ? .16 : 0)
+    + (body.family === 'neutron' ? .76 : 0)
+    + (body.family === 'whitedwarf' ? .52 : 0)
+    + (body.class === 'O' || body.class === 'B' ? .60 : 0)
+    + (body.luminosity > 50 ? .16 : 0),
+    0,
+    1
+  );
+}
+
 function chooseTarget(force = false) {
   if (!player) return;
   ensureChunksAround(player.x, player.y, lowPower ? 3 : 4);
@@ -118,6 +135,10 @@ function chooseTarget(force = false) {
   const minD = (force ? 520 : 720 + Math.min(score, 45) * 7) * difficulty.targetMin;
   const maxD = (force ? 2300 : 3100 + Math.min(score, 65) * 15) * difficulty.targetMax;
   const candidates = [];
+  const sectorX = Math.floor(player.x / CHUNK);
+  const sectorY = Math.floor(player.y / CHUNK);
+  const routeRng = mulberry32(hash2(sectorX * 4099 + score * 17 + (force ? 1 : 0), sectorY * 9173 + chain * 31));
+  const riskPreference = clamp((difficulty.routeRisk - 1) * .92, -0.52, .46);
 
   for (const b of bodies) {
     if (b.kind === 'blackhole' || b.home || b.visited) continue;
@@ -128,17 +149,32 @@ function chooseTarget(force = false) {
     const rewardWeight = Math.sqrt(b.reward || 1) / 4;
     const distanceFit = 1 - Math.abs(d - (minD + maxD) * .5) / ((maxD - minD) * .5);
     const variety = b.kind === 'comet' ? .2 : (b.kind === 'asteroid' ? .08 : (b.binary ? .1 : 0));
-    const risk = b.family === 'neutron' || b.family === 'whitedwarf' || b.class === 'O' || b.class === 'B' ? .09 : 0;
-    candidates.push({ body: b, v: forward * .36 + distanceFit * .38 + rewardWeight * .23 + variety + risk + Math.random() * .05 });
+    const intrinsicRisk = routeBodyRisk(b);
+    const baseScore = forward * .36 + distanceFit * .38 + rewardWeight * .23 + variety;
+    const riskTerm = intrinsicRisk * riskPreference;
+    candidates.push({
+      body: b,
+      risk: intrinsicRisk,
+      v: baseScore + riskTerm + routeRng() * (.018 + difficulty.routeRisk * .014)
+    });
   }
 
   if (!candidates.length) {
-    const a = speedAngle + rnd(Math.random, -.75, .75);
-    const d = rnd(Math.random, 1700 * difficulty.targetMin, (3150 + score * 9) * difficulty.targetMax);
-    const star = addStar(chooseStellarProfile(Math.random, 99), player.x + Math.cos(a) * d, player.y + Math.sin(a) * d, Math.random);
-    if (Math.random() < .28 && star.family === 'main') addCompanionStar(star, { family: 'main', class: chooseMainClass(Math.random, 9) }, rnd(Math.random, 540, 920), Math.random() * TAU, Math.random);
-    const count = star.family === 'neutron' ? 0 : 1 + Math.floor(Math.random() * 3);
-    for (let i = 0; i < count; i++) addPlanet(star, star.scan + 150 + i * 220 + Math.random() * 100, Math.random() * TAU, Math.random);
+    const fallbackSeed = hash2(sectorX * 197 + Math.floor(score / 3) + (force ? 23 : 0), sectorY * 149 + chain * 5 + routeChoice);
+    const fallbackRng = mulberry32(fallbackSeed);
+    const a = speedAngle + rnd(fallbackRng, -.75, .75);
+    const d = rnd(fallbackRng, 1700 * difficulty.targetMin, (3150 + score * 9) * difficulty.targetMax);
+    const tx = player.x + Math.cos(a) * d;
+    const ty = player.y + Math.sin(a) * d;
+    const depth = Math.floor(hypot(tx, ty) / CHUNK);
+    const env = stellarEnvironmentBias(Math.floor(tx / CHUNK), Math.floor(ty / CHUNK));
+    const star = addStar(chooseStellarProfile(fallbackRng, Math.max(8, depth), env), tx, ty, fallbackRng);
+    let companion = null;
+    if (fallbackRng() < .28 && star.family === 'main') {
+      const compEnv = clamp(env + rnd(fallbackRng, -.18, .18), -1, 1);
+      companion = addCompanionStar(star, { family: 'main', class: chooseMainClass(fallbackRng, Math.max(9, depth + 1), compEnv) }, rnd(fallbackRng, 540, 920), fallbackRng() * TAU, fallbackRng);
+    }
+    populateSystemBodies(star, companion, fallbackRng, { minPlanets: star.family === 'neutron' ? 0 : 1, maxPlanets: 3 });
     routeOptions = [star];
     routeChoice = 0;
     setTarget(star, true);
@@ -147,10 +183,12 @@ function chooseTarget(force = false) {
 
   candidates.sort((a, b) => b.v - a.v);
   routeOptions = [];
+  const routeLimit = clamp(Math.floor(difficulty.routeOptionsCount || 3), 1, 6);
   for (const c of candidates) {
     if (!routeOptions.some(b => b.id === c.body.id)) routeOptions.push(c.body);
-    if (routeOptions.length >= 3) break;
+    if (routeOptions.length >= routeLimit) break;
   }
+  if (!routeOptions.length) return;
   routeChoice = 0;
   setTarget(routeOptions[0], true);
 }
@@ -162,7 +200,7 @@ function setTarget(body, announce = true) {
   if (target) {
     target.target = true;
     if (announce) {
-      message = `${objective.title}: ${labelOf(target)}`;
+      message = `${objective.title}: ${labelOf(target)} · ${objective.reward}`;
       messageTime = 1.35;
     }
   }
@@ -180,24 +218,31 @@ function cycleTarget() {
   soundCue('route', null, routeChoice);
 }
 
+function objectiveRoll(body) {
+  const ix = Math.floor((body.x || 0) / 12) + Math.imul(body.id || 0, 73) + difficultyIndex * 997;
+  const iy = Math.floor((body.y || 0) / 12) + Math.imul((body.reward || 1), 389) + (body.kind ? body.kind.length * 41 : 0);
+  return mulberry32(hash2(ix, iy))();
+}
+
 function buildObjective(body) {
+  const roll = objectiveRoll(body);
   let type = 'survey';
-  if (body.kind === 'comet') type = Math.random() < .7 ? 'rendezvous' : 'survey';
-  else if (body.kind === 'planet') type = Math.random() < .56 ? 'orbit' : 'sling';
-  else if (body.kind === 'asteroid') type = Math.random() < .62 ? 'survey' : 'silent';
+  if (body.kind === 'comet') type = roll < .7 ? 'rendezvous' : 'survey';
+  else if (body.kind === 'planet') type = roll < .56 ? 'orbit' : 'sling';
+  else if (body.kind === 'asteroid') type = roll < .62 ? 'survey' : 'silent';
   else if (body.kind === 'star') {
-    if (body.family === 'neutron' || body.family === 'whitedwarf') type = Math.random() < .6 ? 'tide' : 'sling';
-    else if (body.luminosity > 18 || body.family === 'redgiant' || body.class === 'O' || body.class === 'B') type = Math.random() < .64 ? 'skim' : 'survey';
-    else type = Math.random() < .48 ? 'orbit' : 'survey';
+    if (body.family === 'neutron' || body.family === 'whitedwarf') type = roll < .6 ? 'tide' : 'sling';
+    else if (body.luminosity > 18 || body.family === 'redgiant' || body.class === 'O' || body.class === 'B') type = roll < .64 ? 'skim' : 'survey';
+    else type = roll < .48 ? 'orbit' : 'survey';
   }
   const defs = {
-    survey:     { code: 'SCAN',   title: 'Скан цели',       hint: 'пролети через тонкое кольцо', bonus: 2 },
-    orbit:      { code: 'ORBIT',  title: 'Выйди на орбиту', hint: 'держи корабль на ровной дуге', bonus: 5 },
-    sling:      { code: 'SLING',  title: 'Гравитационный разгон',hint: 'пройди рядом без тяги и выйди быстрее', bonus: 6 },
-    skim:       { code: 'SKIM',   title: 'Пролёт у звезды',       hint: 'зайди в зону излучения и быстро уходи', bonus: 7 },
-    rendezvous: { code: 'COMET',  title: 'Догнать комету',    hint: 'сблизься с ней и выровняй скорость', bonus: 7 },
-    tide:       { code: 'TIDE',   title: 'Опасное сближение',      hint: 'подойди близко, но не перегрузи корпус', bonus: 9 },
-    silent:     { code: 'QUIET',  title: 'Скан без тяги',           hint: 'пролети кольцо на инерции', bonus: 4 }
+    survey:     { code: 'SCAN',   title: 'Скан цели',       hint: 'пролети через тонкое кольцо', bonus: 2, risk: 'низкий', reward: '+скан и топливо' },
+    orbit:      { code: 'ORBIT',  title: 'Выйди на орбиту', hint: 'держи корабль на ровной дуге', bonus: 5, risk: 'средний', reward: '+точность' },
+    sling:      { code: 'SLING',  title: 'Гравитационный разгон', hint: 'пройди рядом без тяги и выйди быстрее', bonus: 6, risk: 'средний', reward: '+скорость' },
+    skim:       { code: 'SKIM',   title: 'Пролёт у звезды',       hint: 'зайди в зону излучения и быстро уходи', bonus: 7, risk: 'нагрев', reward: '+риск' },
+    rendezvous: { code: 'COMET',  title: 'Догнать комету',    hint: 'сблизься с ней и выровняй скорость', bonus: 7, risk: 'скорость', reward: '+комета' },
+    tide:       { code: 'TIDE',   title: 'Опасное сближение',      hint: 'подойди близко, но не превысь нагрузку', bonus: 9, risk: 'нагрузка', reward: '+опасность' },
+    silent:     { code: 'QUIET',  title: 'Скан без тяги',           hint: 'пролети кольцо на инерции', bonus: 4, risk: 'контроль', reward: '+инерция' }
   };
   return { type, ...(defs[type] || defs.survey), bodyId: body.id, started: time };
 }
@@ -228,7 +273,7 @@ function objectiveScore(body, perfect, quality, relSpeed, distance) {
   } else {
     ok = true;
   }
-  return { bonus: ok ? bonus : Math.floor(bonus * .3), ok, label };
+  return { bonus: ok ? bonus : Math.floor(bonus * clamp(difficulty.partialObjectiveFactor, 0, .95)), ok, label };
 }
 
 function completeSlingObjective(body, points) {
@@ -240,12 +285,12 @@ function completeSlingObjective(body, points) {
   score += gained;
   best = Math.max(best, score);
   saveBest();
-  player.fuel = clamp(player.fuel + 18, 0, player.maxFuel);
-  player.heat = Math.max(0, player.heat - .08);
-  player.stress = Math.max(0, (player.stress || 0) - .05);
+  player.fuel = clamp(player.fuel + 18 * difficulty.rewardFuelMul, 0, player.maxFuel);
+  player.heat = Math.max(0, player.heat - .08 * difficulty.rewardHeatReliefMul);
+  player.stress = Math.max(0, (player.stress || 0) - .05 * difficulty.rewardStressReliefMul);
   texts.push({ x: body.x, y: body.y - body.r - 42, text: `разгон +${gained}`, hue: body.hue, life: 1.45, max: 1.45 });
   burst(player.x, player.y, 66, body.hue, .85);
-  message = 'Манёвр удался';
+  message = 'Гравитационный манёвр выполнен';
   messageTime = 1.1;
   chooseTarget();
   return true;

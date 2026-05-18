@@ -27,24 +27,57 @@ const SETTINGS_KEY = 'orbit-drift-settings-v11';
 const DIFFICULTIES = [
   {
     id: 'ZEN', name: 'ZEN', label: 'Легко', title: 'мягкий старт',
-    note: 'цели ближе · топлива больше · ошибки легче исправить',
+    note: 'цели ближе · больше топлива · ошибки легче исправить',
+    riskText: 'низкий риск', rewardText: 'щедрые возвраты',
     gravity: .92, thrust: 1.06, brake: 1.04, targetMin: .76, targetMax: .88,
     fuelRegen: 1.18, heatRisk: .68, stressRisk: .72, maxSpeed: .90, scanEase: 1.18,
-    routeRisk: .62, bodyRange: .94
+    routeRisk: .62, bodyRange: .94,
+    autoAimMs: 5600,
+    autoAlignK: .034,
+    predictionStepsMul: 1.28,
+    routeOptionsCount: 5,
+    scanMinSpeed: 64,
+    perfectQuality: .70,
+    partialObjectiveFactor: .56,
+    rewardFuelMul: 1.28,
+    rewardHeatReliefMul: 1.24,
+    rewardStressReliefMul: 1.22
   },
   {
     id: 'FLOW', name: 'FLOW', label: 'Нормально', title: 'лучший баланс',
     note: 'поле заметное · цели дальше · нужна точность',
+    riskText: 'средний риск', rewardText: 'честные награды',
     gravity: 1.12, thrust: .94, brake: .95, targetMin: .96, targetMax: 1.03,
     fuelRegen: 1.00, heatRisk: .94, stressRisk: .96, maxSpeed: 1.0, scanEase: 1.0,
-    routeRisk: 1.0, bodyRange: 1.0
+    routeRisk: 1.0, bodyRange: 1.0,
+    autoAimMs: 4500,
+    autoAlignK: .020,
+    predictionStepsMul: 1.0,
+    routeOptionsCount: 3,
+    scanMinSpeed: 78,
+    perfectQuality: .76,
+    partialObjectiveFactor: .30,
+    rewardFuelMul: 1.0,
+    rewardHeatReliefMul: 1.0,
+    rewardStressReliefMul: 1.0
   },
   {
     id: 'DEEP', name: 'DEEP', label: 'Сложно', title: 'сильная гравитация',
-    note: 'дальние цели · слабее тяга · меньше права на ошибку',
+    note: 'дальние цели · тяга слабее · меньше права на ошибку',
+    riskText: 'высокий риск', rewardText: 'меньше запаса',
     gravity: 1.38, thrust: .78, brake: .84, targetMin: 1.13, targetMax: 1.22,
     fuelRegen: .86, heatRisk: 1.16, stressRisk: 1.20, maxSpeed: 1.08, scanEase: .88,
-    routeRisk: 1.32, bodyRange: 1.12
+    routeRisk: 1.32, bodyRange: 1.12,
+    autoAimMs: 2900,
+    autoAlignK: .009,
+    predictionStepsMul: .72,
+    routeOptionsCount: 2,
+    scanMinSpeed: 92,
+    perfectQuality: .84,
+    partialObjectiveFactor: .14,
+    rewardFuelMul: .78,
+    rewardHeatReliefMul: .82,
+    rewardStressReliefMul: .80
   }
 ];
 
@@ -63,9 +96,17 @@ function writeSettings() {
 const initialSettings = readSettings();
 let difficultyIndex = Math.max(0, Math.min(DIFFICULTIES.length - 1, Number(initialSettings.difficultyIndex ?? 1)));
 let difficulty = DIFFICULTIES[difficultyIndex];
+const DEFAULT_DIFFICULTY = DIFFICULTIES[1];
 let soundOn = initialSettings.soundOn !== false;
 let userZoom = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, Number(initialSettings.userZoom || 1)));
 const TOUCH_CAPABLE = ('ontouchstart' in window) || (navigator.maxTouchPoints || 0) > 0;
+
+function difficultyNumber(key, fallback = 1) {
+  const value = Number(difficulty && difficulty[key]);
+  if (Number.isFinite(value)) return value;
+  const normalValue = Number(DEFAULT_DIFFICULTY && DEFAULT_DIFFICULTY[key]);
+  return Number.isFinite(normalValue) ? normalValue : fallback;
+}
 
 function readBest() {
   try { return Number(localStorage.getItem(STORAGE_KEY) || 0); }
@@ -112,6 +153,9 @@ let gravityAdvice = '';
 let gravityAdviceTime = 0;
 let flowAwardLevel = 0;
 let visitedNodes = new Set();
+let tutorialHint = '';
+let tutorialHintTime = 0;
+let tutorialStage = 0;
 let gravityFieldCache = { frame: -999, camX: NaN, camY: NaN, zoom: NaN, width: 0, height: 0, lines: [] };
 let predictionCache = { frame: -999, x: NaN, y: NaN, vx: NaN, vy: NaN, points: [] };
 let perf = { frameMs: 16, fps: 60, bodies: 0, gravSources: 0, fieldLines: 0 };
@@ -175,6 +219,27 @@ function mulberry32(a) {
   };
 }
 
+function valueNoise01(x, y, freq = .1) {
+  const sx = x * freq;
+  const sy = y * freq;
+  const ix = Math.floor(sx);
+  const iy = Math.floor(sy);
+  const fx = smoothstep(0, 1, sx - ix);
+  const fy = smoothstep(0, 1, sy - iy);
+  const n00 = hash2(ix, iy) / 4294967295;
+  const n10 = hash2(ix + 1, iy) / 4294967295;
+  const n01 = hash2(ix, iy + 1) / 4294967295;
+  const n11 = hash2(ix + 1, iy + 1) / 4294967295;
+  return lerp(lerp(n00, n10, fx), lerp(n01, n11, fx), fy);
+}
+
+function stellarEnvironmentBias(cx, cy) {
+  const broad = valueNoise01(cx + 193.17, cy - 91.43, .095);
+  const medium = valueNoise01(cx * 1.9 - 54.2, cy * 1.9 + 28.8, .17);
+  const fine = valueNoise01(cx * 4.2 + 17.5, cy * 4.2 - 31.9, .13);
+  return clamp((broad - .5) * 1.3 + (medium - .5) * .55 + (fine - .5) * .25, -1, 1);
+}
+
 function chooseWeighted(items, rng) {
   const total = items.reduce((s, it) => s + it.w, 0);
   let roll = rng() * total;
@@ -185,21 +250,32 @@ function chooseWeighted(items, rng) {
   return items[items.length - 1].v;
 }
 
-function chooseMainClass(rng, depth = 0) {
+function chooseMainClass(rng, depth = 0, envBias = 0) {
+  const bias = clamp(envBias, -1, 1);
+  const classHeat = { M: -3, K: -2, G: -1, F: 1, A: 2, B: 3, O: 4 };
   let weights = Object.keys(MAIN_SEQUENCE).map(k => ({ v: k, w: MAIN_SEQUENCE[k].rarity }));
   if (depth < 5 || score < 22) {
     weights = weights.map(it => ({ v: it.v, w: (it.v === 'O' || it.v === 'B') ? it.w * .18 : it.w }));
   }
   if (score < 12) weights = weights.map(it => ({ v: it.v, w: it.v === 'O' ? 0 : (it.v === 'B' ? it.w * .2 : it.w) }));
+  weights = weights.map(it => {
+    const rank = classHeat[it.v] || 0;
+    const shift = rank * bias;
+    const mul = shift >= 0 ? (1 + shift * .20) : (1 / (1 + Math.abs(shift) * .18));
+    return { v: it.v, w: Math.max(0, it.w * mul) };
+  });
   return chooseWeighted(weights, rng);
 }
 
-function chooseStellarProfile(rng, depth = 0) {
+function chooseStellarProfile(rng, depth = 0, envBias = 0) {
+  const bias = clamp(envBias, -1, 1);
+  const hot = Math.max(0, bias);
+  const cold = Math.max(0, -bias);
   const specials = [];
-  specials.push({ v: { family: 'main', class: chooseMainClass(rng, depth) }, w: 92 });
-  specials.push({ v: { family: 'brown', class: 'BD' }, w: score > 6 ? 4.8 : 2.5 });
-  specials.push({ v: { family: 'redgiant', class: 'RG' }, w: score > 12 ? 2.8 : .5 });
-  specials.push({ v: { family: 'whitedwarf', class: 'WD' }, w: score > 16 ? 2.2 : .2 });
-  specials.push({ v: { family: 'neutron', class: 'NS' }, w: score > 32 ? .45 : 0 });
+  specials.push({ v: { family: 'main', class: chooseMainClass(rng, depth, bias) }, w: 92 * (1 - Math.abs(bias) * .12) });
+  specials.push({ v: { family: 'brown', class: 'BD' }, w: (score > 6 ? 4.8 : 2.5) * (1 + cold * .62 - hot * .20) });
+  specials.push({ v: { family: 'redgiant', class: 'RG' }, w: (score > 12 ? 2.8 : .5) * (1 + hot * .34) });
+  specials.push({ v: { family: 'whitedwarf', class: 'WD' }, w: (score > 16 ? 2.2 : .2) * (1 + hot * .26) });
+  specials.push({ v: { family: 'neutron', class: 'NS' }, w: (score > 32 ? .45 : 0) * (1 + hot * .48) });
   return chooseWeighted(specials, rng);
 }
