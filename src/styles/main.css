@@ -1,0 +1,44 @@
+/*
+ * Orbit Drift — visual layer
+ * Minimal dark space, thin geometry, readable HUD.
+ */
+:root {
+      --bg: #01040b;
+      --fg: rgba(238, 246, 255, .92);
+      --muted: rgba(238, 246, 255, .43);
+    }
+    html, body {
+      margin: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: var(--bg);
+      color: var(--fg);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      touch-action: none;
+      user-select: none;
+    }
+    canvas {
+      display: block;
+      width: 100vw;
+      height: 100vh;
+      background: var(--bg);
+    }
+    .hint {
+      position: fixed;
+      left: 18px;
+      bottom: 14px;
+      max-width: 660px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.45;
+      pointer-events: none;
+      letter-spacing: .015em;
+      text-shadow: 0 0 16px rgba(0,0,0,.9);
+    }
+    @media (max-width: 760px) {
+      .hint { left: 14px; right: 14px; bottom: 12px; font-size: 11px; }
+    }
+    @media (max-width: 520px) {
+      .hint { display: none; }
+    }

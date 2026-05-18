@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+  <meta name="theme-color" content="#01040b" />
+  <meta name="description" content="Orbit Drift — минималистичная 2D-игра про космический дрейф, видимую гравитацию и навигацию между звёздами." />
+  <title>Orbit Drift</title>
+  <link rel="stylesheet" href="src/styles/main.css" />
+</head>
+<body>
+  <canvas id="game" aria-label="Orbit Drift game canvas"></canvas>
+  <div class="hint">Короткие импульсы двигателем. Остальное сделает гравитация. Колесо/pinch: масштаб · R цель · G поле · N навигация · M звук.</div>
+  <noscript>Для запуска Orbit Drift нужен JavaScript.</noscript>
+
+  <!--
+    Classic scripts are used deliberately: the game opens directly from a ZIP/file on PC and mobile,
+    without a bundler, without npm install, and without a local dev server.
+  -->
+  <script defer src="src/js/01-config-state.js"></script>
+  <script defer src="src/js/02-viewport-camera.js"></script>
+  <script defer src="src/js/03-audio.js"></script>
+  <script defer src="src/js/04-world-generation.js"></script>
+  <script defer src="src/js/05-game-flow-objectives.js"></script>
+  <script defer src="src/js/06-physics-orbits.js"></script>
+  <script defer src="src/js/07-simulation-gameplay.js"></script>
+  <script defer src="src/js/08-render-space.js"></script>
+  <script defer src="src/js/09-render-ui.js"></script>
+  <script defer src="src/js/10-input-main-loop.js"></script>
+</body>
+</html>
