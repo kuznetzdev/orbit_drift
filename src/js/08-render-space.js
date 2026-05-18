@@ -6,6 +6,8 @@
 
 'use strict';
 
+const visibleBodiesScratch = [];
+
 function draw() {
   drawBackground();
   let sx = 0;
@@ -100,12 +102,21 @@ function drawCoordinateGrid() {
   ctx.restore();
 }
 
-function visibleBodies(extra = 360) {
+function collectVisibleBodies(extra, out) {
   const left = camera.x - W / (2 * camera.zoom) - extra;
   const right = camera.x + W / (2 * camera.zoom) + extra;
   const top = camera.y - H / (2 * camera.zoom) - extra;
   const bottom = camera.y + H / (2 * camera.zoom) + extra;
-  return bodies.filter(b => b.x + (b.field || b.r) > left && b.x - (b.field || b.r) < right && b.y + (b.field || b.r) > top && b.y - (b.field || b.r) < bottom);
+  out.length = 0;
+  for (let i = 0; i < bodies.length; i++) {
+    const b = bodies[i];
+    if (bodyIntersectsView(b, left, right, top, bottom)) out.push(b);
+  }
+  return out;
+}
+
+function visibleBodies(extra = 360) {
+  return collectVisibleBodies(extra, []);
 }
 
 function rebuildGravityFieldCache() {
@@ -303,7 +314,7 @@ function drawGravityCompass() {
   ctx.font = '10px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
   ctx.textAlign = 'left';
   ctx.fillStyle = `hsla(${hue}, 96%, 82%, .72)`;
-  ctx.fillText(`G ${fmtNum(mag, 1)} · ${g.body ? labelOf(g.body) : 'FIELD'}`, tipX + 8, tipY - 5);
+  ctx.fillText(`G ${fmtNum(mag, 1)} · ${g.body ? labelOf(g.body) : 'поле'}`, tipX + 8, tipY - 5);
   if ((player.gravBoost || 0) > .08) {
     ctx.fillStyle = `hsla(${hue}, 96%, 82%, .72)`;
     ctx.fillText(`поле помогает +${Math.round((player.gravBoost || 0) * 100)}%`, ps.x + 13, ps.y + 18);
@@ -320,7 +331,12 @@ function rebuildPredictionCache() {
   let vy = player.vy;
   const dt = lowPower ? .078 : .062;
   const points = [{ x, y }];
-  const predictSteps = lowPower ? 54 : 96;
+  const baseSteps = lowPower ? 54 : 96;
+  const predictSteps = clamp(
+    Math.round(baseSteps * difficultyNumber('predictionStepsMul', 1)),
+    lowPower ? 26 : 36,
+    lowPower ? 124 : 220
+  );
   for (let i = 0; i < predictSteps; i++) {
     const g0 = gravityAtFrom(sources, x, y, false);
     const w0 = stellarWindAt(x, y);
@@ -444,9 +460,9 @@ function drawRoute() {
 }
 
 function drawBodies() {
-  const list = visibleBodies(450);
-  for (const b of list) drawBodyFields(b);
-  for (const b of list) drawBodyCore(b);
+  const list = collectVisibleBodies(450, visibleBodiesScratch);
+  for (let i = 0; i < list.length; i++) drawBodyFields(list[i]);
+  for (let i = 0; i < list.length; i++) drawBodyCore(list[i]);
 }
 
 function drawBodyFields(b) {

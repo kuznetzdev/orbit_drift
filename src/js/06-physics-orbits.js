@@ -6,9 +6,67 @@
 
 'use strict';
 
+const bodyLookupCache = {
+  source: null,
+  length: -1,
+  firstId: 0,
+  lastId: 0,
+  byId: new Map()
+};
+
+const gravitySourceScratch = [];
+const gravitySourceStrengths = [];
+const gravitySourceResult = [];
+
+function getBodyByIdIndex() {
+  const length = bodies.length;
+  const firstId = length > 0 ? bodies[0].id : 0;
+  const lastId = length > 0 ? bodies[length - 1].id : 0;
+  if (
+    bodyLookupCache.source === bodies
+    && bodyLookupCache.length === length
+    && bodyLookupCache.firstId === firstId
+    && bodyLookupCache.lastId === lastId
+  ) {
+    return bodyLookupCache.byId;
+  }
+
+  bodyLookupCache.source = bodies;
+  bodyLookupCache.length = length;
+  bodyLookupCache.firstId = firstId;
+  bodyLookupCache.lastId = lastId;
+  bodyLookupCache.byId.clear();
+  for (let i = 0; i < bodies.length; i++) bodyLookupCache.byId.set(bodies[i].id, bodies[i]);
+  return bodyLookupCache.byId;
+}
+
+function bodyIntersectsView(b, left, right, top, bottom) {
+  const radius = b.field || b.r || 0;
+  return b.x + radius > left && b.x - radius < right && b.y + radius > top && b.y - radius < bottom;
+}
+
+function gravitySourceStrength(b, cx, cy) {
+  const d = Math.max(80, hypot(b.x - cx, b.y - cy) - (b.r || 0));
+  return (b.mu || 0) / (d * d);
+}
+
+function insertGravitySource(list, strengths, candidate, strength, limit) {
+  let insertAt = list.length;
+  while (insertAt > 0 && strength > strengths[insertAt - 1]) insertAt--;
+  if (insertAt >= limit) return;
+  const nextLength = Math.min(list.length + 1, limit);
+  for (let i = nextLength - 1; i > insertAt; i--) {
+    list[i] = list[i - 1];
+    strengths[i] = strengths[i - 1];
+  }
+  list[insertAt] = candidate;
+  strengths[insertAt] = strength;
+  list.length = nextLength;
+  strengths.length = nextLength;
+}
+
 function updateBodies(dt) {
-  const byId = new Map();
-  for (const b of bodies) byId.set(b.id, b);
+  const byId = getBodyByIdIndex();
   for (const b of bodies) {
     if (b.scanCooldown > 0) b.scanCooldown -= dt;
     if (b.kind === 'asteroid' || b.kind === 'comet') b.phase += (b.spin || 0) * dt;
@@ -78,16 +136,27 @@ function gravityAtFrom(sourceBodies, x, y, includeDominant = true) {
 }
 
 function strongestGravitySources(extra = 2600, limit = 22) {
-  if (!player && state !== 'menu') return [];
+  const out = gravitySourceResult;
+  out.length = 0;
+  if (!player && state !== 'menu') return out;
   const cx = player ? player.x : camera.x;
   const cy = player ? player.y : camera.y;
-  const list = visibleBodies(extra).filter(b => b.gravitates);
-  list.sort((a, b) => {
-    const da = Math.max(80, hypot(a.x - cx, a.y - cy) - (a.r || 0));
-    const db = Math.max(80, hypot(b.x - cx, b.y - cy) - (b.r || 0));
-    return ((b.mu || 0) / (db * db)) - ((a.mu || 0) / (da * da));
-  });
-  const out = list.slice(0, limit);
+  const left = camera.x - W / (2 * camera.zoom) - extra;
+  const right = camera.x + W / (2 * camera.zoom) + extra;
+  const top = camera.y - H / (2 * camera.zoom) - extra;
+  const bottom = camera.y + H / (2 * camera.zoom) + extra;
+  const ranked = gravitySourceScratch;
+  const strengths = gravitySourceStrengths;
+  ranked.length = 0;
+  strengths.length = 0;
+
+  for (let i = 0; i < bodies.length; i++) {
+    const b = bodies[i];
+    if (!b.gravitates || !bodyIntersectsView(b, left, right, top, bottom)) continue;
+    insertGravitySource(ranked, strengths, b, gravitySourceStrength(b, cx, cy), limit);
+  }
+
+  for (let i = 0; i < ranked.length; i++) out.push(ranked[i]);
   perf.gravSources = out.length;
   return out;
 }
