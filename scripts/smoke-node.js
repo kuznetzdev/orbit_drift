@@ -13,12 +13,13 @@ const jsFiles = [
 ];
 
 const ctxMethods = [
-  'setTransform','clearRect','fillRect','strokeRect','beginPath','moveTo','lineTo','arc','ellipse','closePath','stroke','fill','save','restore','translate','rotate','scale','fillText','strokeText','rect','clip','quadraticCurveTo','bezierCurveTo'
+  'setTransform','clearRect','fillRect','strokeRect','beginPath','moveTo','lineTo','arc','arcTo','ellipse','closePath','stroke','fill','save','restore','translate','rotate','scale','fillText','strokeText','rect','clip','quadraticCurveTo','bezierCurveTo'
 ];
 const canvasCtx = Object.fromEntries(ctxMethods.map(k => [k, () => {}]));
 canvasCtx.measureText = text => ({ width: String(text).length * 7 });
 canvasCtx.createLinearGradient = () => ({ addColorStop: () => {} });
 canvasCtx.createRadialGradient = () => ({ addColorStop: () => {} });
+canvasCtx.setLineDash = () => {};
 canvasCtx.globalAlpha = 1;
 canvasCtx.lineWidth = 1;
 canvasCtx.font = '';
@@ -68,6 +69,215 @@ function assert(condition, message) {
 
 function evaluate(expression) {
   return vm.runInContext(expression, sandbox);
+}
+
+function assertResponsiveUiRects() {
+  const result = evaluate(`(() => {
+    const viewports = [
+      { name: 'desktop', w: 1280, h: 720, dpr: 2 },
+      { name: 'mobile', w: 390, h: 740, dpr: 3 },
+      { name: 'short-mobile', w: 360, h: 640, dpr: 2.5 }
+    ];
+
+    const finiteRect = rect =>
+      !!rect
+      && ['x', 'y', 'w', 'h'].every(key => Number.isFinite(Number(rect[key])))
+      && rect.w > 0
+      && rect.h > 0;
+    const withinViewport = (rect, width, height, pad = 0) =>
+      finiteRect(rect)
+      && rect.x >= pad
+      && rect.y >= pad
+      && rect.x + rect.w <= width - pad
+      && rect.y + rect.h <= height - pad;
+    const areaOverlap = (a, b) => {
+      if (!finiteRect(a) || !finiteRect(b)) return 0;
+      const x = Math.max(0, Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x));
+      const y = Math.max(0, Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y));
+      return x * y;
+    };
+    const separated = (a, b, tolerance = 1) => areaOverlap(a, b) <= tolerance;
+    const readable = value => {
+      const text = String(value || '').trim();
+      return text.length >= 2
+        && !/undefined|null|todo|nan/i.test(text)
+        && !/\\uFFFD/.test(text);
+    };
+
+    const snapshots = [];
+    for (const vp of viewports) {
+      window.innerWidth = vp.w;
+      window.innerHeight = vp.h;
+      window.devicePixelRatio = vp.dpr;
+      resize();
+
+      state = 'menu';
+      setupWorld(true);
+      const overlay = overlayMetrics(true);
+      const difficulties = menuDifficultyRects();
+      const sound = menuSoundRect();
+      const start = menuStartRect();
+      const menuRects = difficulties.concat([sound, start]);
+      const menuPairsSeparated = menuRects.every((rect, i) =>
+        menuRects.every((other, j) => i >= j || separated(rect, other))
+      );
+      const menuTextReadable = DIFFICULTIES.every(d =>
+        readable(d.label || d.name)
+        && readable(d.title)
+        && readable(d.riskText)
+        && readable(d.rewardText)
+      );
+
+      startGame();
+      const score = drawScorePanel(uiMargin(), uiMargin(), W < 640 || H < 540);
+      const objectivePanel = drawObjectivePanel(uiMargin(), score.y + score.h + (W < 640 || H < 540 ? 8 : 10), W < 640 || H < 540);
+      const ship = drawShipPanel(W < 640 || H < 540);
+      const quick = quickButtonRects();
+      const menuButton = quick.find(button => button.action === 'menu') || null;
+      const quickPairsSeparated = quick.every((rect, i) =>
+        quick.every((other, j) => i >= j || separated(rect, other))
+      );
+      const panelRects = [score, objectivePanel].filter(rect => finiteRect(rect));
+      if (ship) panelRects.push(ship);
+      const panelPairsSeparated = panelRects.every((rect, i) =>
+        panelRects.every((other, j) => i >= j || separated(rect, other, 2))
+      );
+      const quickClearOfPanels = quick.every(button =>
+        panelRects.every(panel => separated(button, panel, 2))
+      );
+
+      snapshots.push({
+        name: vp.name,
+        width: W,
+        height: H,
+        dpr: DPR,
+        lowPower,
+        uiScale,
+        backgroundStars: backgroundStars.length,
+        menuOverlayValid: withinViewport({ x: overlay.x, y: overlay.y, w: overlay.boxW, h: overlay.boxH }, W, H),
+        menuDifficultyCount: difficulties.length,
+        menuRectsInBounds: menuRects.every(rect => withinViewport(rect, W, H, 0)),
+        menuPairsSeparated,
+        menuTextReadable,
+        startReadable: readable(start.label || 'start'),
+        objectiveReadable:
+          !!objective
+          && readable(objective.code)
+          && readable(objective.title)
+          && readable(objective.hint)
+          && readable(objectiveVerb(objective))
+          && readable(objectiveMetaText(objective))
+          && readable(objectiveSuccessText(objective)),
+        quickCount: quick.length,
+        quickRectsInBounds: quick.every(rect => withinViewport(rect, W, H, 0)),
+        quickPairsSeparated,
+        hasMenuButton: !!menuButton,
+        menuButtonReadable: !!menuButton && readable(menuButton.label),
+        panelRectsInBounds: panelRects.every(rect => withinViewport(rect, W, H, 0)),
+        panelPairsSeparated,
+        quickClearOfPanels
+      });
+    }
+    return snapshots;
+  })()`);
+
+  for (const snapshot of result) {
+    assert(snapshot.menuOverlayValid, `${snapshot.name}: menu overlay must stay inside viewport`);
+    assert(snapshot.menuDifficultyCount === 3, `${snapshot.name}: menu must expose all difficulty buttons`);
+    assert(snapshot.menuRectsInBounds, `${snapshot.name}: menu controls must stay inside viewport`);
+    assert(snapshot.menuPairsSeparated, `${snapshot.name}: menu controls must not overlap`);
+    assert(snapshot.menuTextReadable, `${snapshot.name}: difficulty cards must keep readable labels`);
+    assert(snapshot.objectiveReadable, `${snapshot.name}: play HUD objective text must stay readable`);
+    assert(snapshot.quickCount >= 7, `${snapshot.name}: quick actions are missing`);
+    assert(snapshot.quickRectsInBounds, `${snapshot.name}: quick actions must stay inside viewport`);
+    assert(snapshot.quickPairsSeparated, `${snapshot.name}: quick actions must not overlap`);
+    assert(snapshot.hasMenuButton, `${snapshot.name}: play HUD must include a menu button`);
+    assert(snapshot.menuButtonReadable, `${snapshot.name}: menu quick button must have a readable label`);
+    assert(snapshot.panelRectsInBounds, `${snapshot.name}: HUD panels must stay inside viewport`);
+    assert(snapshot.panelPairsSeparated, `${snapshot.name}: HUD panels must not overlap`);
+    assert(snapshot.quickClearOfPanels, `${snapshot.name}: quick actions must not cover HUD panels`);
+  }
+}
+
+function assertAdaptivePerformanceLimits() {
+  const result = evaluate(`(() => {
+    const originalTouch = navigator.maxTouchPoints;
+    const samples = [];
+
+    function sample(name, width, height, dpr, touchPoints) {
+      navigator.maxTouchPoints = touchPoints;
+      window.innerWidth = width;
+      window.innerHeight = height;
+      window.devicePixelRatio = dpr;
+      resize();
+      setupWorld(false);
+      camera.x = player.x;
+      camera.y = player.y;
+      camera.zoom = width < 700 ? .88 : 1;
+      frame += 1;
+
+      const hasPrediction = typeof rebuildPredictionCache === 'function';
+      if (hasPrediction) rebuildPredictionCache();
+      const hasGravityField = typeof rebuildGravityFieldCache === 'function';
+      if (hasGravityField) rebuildGravityFieldCache();
+      const hasVisibleBodies = typeof visibleBodies === 'function';
+      const visibleCount = hasVisibleBodies ? visibleBodies().length : null;
+
+      samples.push({
+        name,
+        width,
+        height,
+        dpr: DPR,
+        lowPower,
+        uiScale,
+        canvasPixels: canvas.width * canvas.height,
+        backgroundStars: backgroundStars.length,
+        hasPrediction,
+        predictionPoints: hasPrediction && predictionCache.points ? predictionCache.points.length : null,
+        hasGravityField,
+        fieldLines: hasGravityField && gravityFieldCache.lines ? gravityFieldCache.lines.length : null,
+        hasVisibleBodies,
+        visibleCount,
+        totalBodies: bodies.length,
+        perfFinite:
+          Number.isFinite(perf.frameMs)
+          && Number.isFinite(perf.fps)
+          && Number.isFinite(perf.bodies)
+          && Number.isFinite(perf.gravSources)
+          && Number.isFinite(perf.fieldLines)
+      });
+    }
+
+    sample('desktop', 1280, 720, 2, 0);
+    sample('mobile', 390, 740, 3, 1);
+    navigator.maxTouchPoints = originalTouch;
+    return samples;
+  })()`);
+
+  const desktop = result.find(sample => sample.name === 'desktop');
+  const mobile = result.find(sample => sample.name === 'mobile');
+  assert(desktop && mobile, 'adaptive performance samples are missing');
+  assert(desktop.dpr <= 1.55, 'desktop DPR cap must prevent excessive canvas size');
+  assert(mobile.lowPower === true, 'mobile viewport must enable low-power mode');
+  assert(mobile.dpr <= 1.0, 'mobile DPR cap must prevent high-DPR overdraw');
+  assert(desktop.canvasPixels <= 1280 * 720 * 1.55 * 1.55 + 1280, 'desktop canvas pixel budget is too high');
+  assert(mobile.canvasPixels <= 390 * 740 + 390, 'mobile canvas pixel budget is too high');
+  assert(desktop.backgroundStars > mobile.backgroundStars, 'mobile starfield should be lighter than desktop');
+  for (const sample of result) {
+    assert(sample.perfFinite, `${sample.name}: perf counters must stay finite`);
+    if (sample.hasPrediction) {
+      assert(sample.predictionPoints >= 14, `${sample.name}: prediction path became too short`);
+      assert(sample.predictionPoints <= (sample.lowPower ? 64 : 112), `${sample.name}: prediction path exceeds adaptive budget`);
+    }
+    if (sample.hasGravityField) {
+      assert(sample.fieldLines >= 0, `${sample.name}: gravity field line count must be non-negative`);
+      assert(sample.fieldLines <= (sample.lowPower ? 120 : 360), `${sample.name}: gravity field exceeds adaptive budget`);
+    }
+    if (sample.hasVisibleBodies) {
+      assert(sample.visibleCount >= 1, `${sample.name}: visible body collection must include nearby bodies`);
+      assert(sample.visibleCount <= sample.totalBodies, `${sample.name}: visible body count cannot exceed total bodies`);
+    }
+  }
 }
 
 function assertDifficultyInvariants() {
@@ -300,6 +510,8 @@ try {
   assertDifficultyInvariants();
   assertGeneratedWorld();
   assertObjectiveHudFields();
+  assertResponsiveUiRects();
+  assertAdaptivePerformanceLimits();
   assertOptionalMenuReturnUx();
   assertDeterministicFallbackTarget();
   console.log('smoke: ok');
