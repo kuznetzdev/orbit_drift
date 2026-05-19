@@ -11,36 +11,66 @@ function uiMargin() {
 }
 
 function drawSoftPanel(x, y, w, h, radius = 16, alpha = .58) {
+  ctx.save();
   const grd = ctx.createLinearGradient(x, y, x + w, y + h);
-  grd.addColorStop(0, `rgba(6, 16, 34, ${alpha})`);
-  grd.addColorStop(1, `rgba(1, 6, 16, ${Math.max(.25, alpha - .18)})`);
+  grd.addColorStop(0, `rgba(9, 24, 49, ${alpha})`);
+  grd.addColorStop(.62, `rgba(4, 13, 31, ${Math.max(.30, alpha - .12)})`);
+  grd.addColorStop(1, `rgba(1, 5, 15, ${Math.max(.24, alpha - .20)})`);
   ctx.fillStyle = grd;
   roundRect(x, y, w, h, radius);
   ctx.fill();
-  ctx.strokeStyle = 'rgba(148,226,255,.13)';
+  ctx.strokeStyle = 'rgba(151,229,255,.18)';
   ctx.lineWidth = 1;
   roundRect(x, y, w, h, radius);
   ctx.stroke();
+  ctx.strokeStyle = 'rgba(255,255,255,.055)';
+  ctx.beginPath();
+  ctx.moveTo(x + radius, y + 1);
+  ctx.lineTo(x + w - radius, y + 1);
+  ctx.stroke();
+  ctx.restore();
+}
+
+function pillWidth(text) {
+  ctx.save();
+  ctx.font = '700 10px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
+  const w = ctx.measureText(String(text || '')).width + 18;
+  ctx.restore();
+  return w;
 }
 
 function drawPill(text, x, y, hue = 205, active = true) {
   const pad = 9;
+  text = String(text || '');
   ctx.save();
   ctx.font = '700 10px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
   const w = ctx.measureText(text).width + pad * 2;
   const h = 20;
-  ctx.fillStyle = active ? `hsla(${hue}, 70%, 42%, .18)` : 'rgba(238,246,255,.055)';
+  ctx.fillStyle = active ? `hsla(${hue}, 70%, 42%, .22)` : 'rgba(238,246,255,.06)';
   roundRect(x, y, w, h, 10);
   ctx.fill();
-  ctx.strokeStyle = active ? `hsla(${hue}, 92%, 72%, .28)` : 'rgba(238,246,255,.11)';
+  ctx.strokeStyle = active ? `hsla(${hue}, 92%, 74%, .36)` : 'rgba(238,246,255,.13)';
   roundRect(x, y, w, h, 10);
   ctx.stroke();
-  ctx.fillStyle = active ? `hsla(${hue}, 92%, 82%, .82)` : 'rgba(238,246,255,.38)';
+  ctx.fillStyle = active ? `hsla(${hue}, 92%, 84%, .88)` : 'rgba(238,246,255,.42)';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   ctx.fillText(text, x + w / 2, y + h / 2 + .5);
   ctx.restore();
   return w;
+}
+
+function fitText(text, maxW) {
+  text = String(text || '');
+  if (ctx.measureText(text).width <= maxW) return text;
+  const suffix = '...';
+  let value = text;
+  while (value.length > 1 && ctx.measureText(value + suffix).width > maxW) value = value.slice(0, -1);
+  return value.length > 1 ? value + suffix : suffix;
+}
+
+function fillFittedText(text, x, y, maxW) {
+  ctx.fillText(fitText(text, maxW), x, y);
 }
 
 function drawWrappedText(text, x, y, maxW, lineH, maxLines = 2) {
@@ -58,7 +88,7 @@ function drawWrappedText(text, x, y, maxW, lineH, maxLines = 2) {
     }
   }
   if (line && lines.length < maxLines) lines.push(line);
-  for (let i = 0; i < lines.length; i++) ctx.fillText(lines[i], x, y + i * lineH);
+  for (let i = 0; i < lines.length; i++) fillFittedText(lines[i], x, y + i * lineH, maxW);
   return lines.length * lineH;
 }
 
@@ -74,7 +104,7 @@ function drawMetricBar(x, y, w, label, value, hue, valueText = '') {
   if (valueText) {
     ctx.textAlign = 'right';
     ctx.fillStyle = 'rgba(238,246,255,.50)';
-    ctx.fillText(valueText, x + w, y);
+    ctx.fillText(fitText(valueText, 48), x + w, y);
   }
   const by = y + 15;
   ctx.fillStyle = 'rgba(238,246,255,.075)';
@@ -118,71 +148,75 @@ function routeText() {
 }
 
 function drawScorePanel(x, y, compact) {
-  const w = compact ? 176 : 228;
-  const h = compact ? 88 : 104;
-  drawSoftPanel(x, y, w, h, 16, .52);
+  const w = compact ? (W < 380 ? 164 : 184) : 232;
+  const h = compact ? 94 : 108;
+  drawSoftPanel(x, y, w, h, 16, .58);
   ctx.textAlign = 'left';
   ctx.textBaseline = 'top';
-  ctx.fillStyle = 'rgba(149,228,255,.70)';
+  ctx.fillStyle = 'rgba(151,231,255,.76)';
   ctx.font = '700 10px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
   ctx.fillText('ORBIT DRIFT', x + 14, y + 12);
-  ctx.fillStyle = 'rgba(244,249,255,.94)';
-  ctx.font = compact ? '700 28px ui-sans-serif, system-ui' : '700 34px ui-sans-serif, system-ui';
+  ctx.fillStyle = 'rgba(247,252,255,.98)';
+  ctx.font = compact ? '800 30px ui-sans-serif, system-ui' : '800 36px ui-sans-serif, system-ui';
   ctx.fillText(String(score), x + 14, y + (compact ? 29 : 31));
-  ctx.fillStyle = 'rgba(238,246,255,.42)';
+  ctx.fillStyle = 'rgba(238,246,255,.48)';
   ctx.font = '11px ui-sans-serif, system-ui';
-  ctx.fillText(`рекорд ${best}`, x + 14, y + h - 31);
-  ctx.fillText(`серия ${chain}`, x + 14, y + h - 16);
-  drawPill(difficulty.label || difficulty.name, x + w - (compact ? 86 : 96), y + 13, 205, true);
+  ctx.fillText(`рекорд ${best}`, x + 14, y + h - 34);
+  ctx.fillStyle = chain > 0 ? 'rgba(255,218,148,.78)' : 'rgba(238,246,255,.38)';
+  ctx.fillText(`серия ${chain}`, x + 14, y + h - 18);
+  const label = difficulty.label || difficulty.name;
+  drawPill(label, x + w - pillWidth(label) - 12, y + 12, 205, true);
   return { x, y, w, h };
 }
 
-function drawObjectivePanel(x, y, compact) {
+function drawObjectivePanel(x, y, compact, avoidShip = true) {
   if (!objective || !target) return { x, y, w: 0, h: 0 };
   const margin = uiMargin();
-  const shipW = compact ? 136 : 172;
+  const shipW = compact ? (W < 460 ? 132 : 148) : 176;
   const shipX = W - shipW - margin;
-  const maxByShip = shipX >= (compact ? 198 : 270) ? shipX - x - 10 : W - x * 2;
-  const w = Math.min(compact ? maxByShip : 420, W - x * 2);
-  const h = compact ? 104 : 126;
-  drawSoftPanel(x, y, w, h, 16, .56);
+  const maxByShip = avoidShip && shipX >= (compact ? 202 : 280) ? shipX - x - 10 : W - x * 2;
+  const w = Math.max(0, Math.min(compact ? maxByShip : 424, W - x * 2));
+  const h = compact ? (W < 430 ? 116 : 110) : 128;
+  if (w < 184) return { x, y, w: 0, h: 0 };
+  drawSoftPanel(x, y, w, h, 16, .60);
   ctx.textAlign = 'left';
   ctx.textBaseline = 'top';
-  drawPill(objective.code, x + 14, y + 13, target.hue, true);
+  const codeW = drawPill(objective.code, x + 14, y + 13, target.hue, true);
+  const titleX = x + 14 + codeW + 10;
   ctx.fillStyle = 'rgba(244,249,255,.93)';
   ctx.font = compact ? '600 13px ui-sans-serif, system-ui' : '600 15px ui-sans-serif, system-ui';
-  ctx.fillText(objective.title, x + 88, y + 14);
+  fillFittedText(objective.title, titleX, y + 15, w - (titleX - x) - 14);
 
   ctx.fillStyle = 'rgba(238,246,255,.72)';
   ctx.font = compact ? '11px ui-sans-serif, system-ui' : '12px ui-sans-serif, system-ui';
-  drawWrappedText(`Действие: ${objective.hint}`, x + 14, y + (compact ? 40 : 43), w - 28, compact ? 13 : 15, 1);
+  drawWrappedText(`Действие: ${objective.hint}`, x + 14, y + (compact ? 43 : 46), w - 28, compact ? 14 : 15, compact && W < 430 ? 2 : 1);
 
   ctx.fillStyle = 'rgba(170,228,255,.72)';
   ctx.font = '10px ui-sans-serif, system-ui';
-  ctx.fillText(objectiveSuccessText(objective), x + 14, y + (compact ? 58 : 66));
+  fillFittedText(objectiveSuccessText(objective), x + 14, y + (compact ? 68 : 68), w - 28);
 
   ctx.fillStyle = 'rgba(255,214,145,.70)';
   ctx.font = '10px ui-sans-serif, system-ui';
-  ctx.fillText(objectiveMetaText(objective), x + 14, y + (compact ? 74 : 83));
+  fillFittedText(objectiveMetaText(objective), x + 14, y + (compact ? 84 : 86), w - 28);
 
   const d = worldDistanceToTarget();
   ctx.fillStyle = `hsla(${target.hue}, 94%, 78%, .66)`;
   ctx.font = '10px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
-  ctx.fillText(`${routeText()} · ${labelOf(target)} · ${Math.round(d)} м · ${objectiveVerb(objective)}`, x + 14, y + h - 18);
+  fillFittedText(`${routeText()} · ${labelOf(target)} · ${Math.round(d)} м · ${objectiveVerb(objective)}`, x + 14, y + h - 18, w - 28);
   return { x, y, w, h };
 }
 
 function drawShipPanel(compact) {
   const margin = uiMargin();
-  const w = compact ? 136 : 172;
-  const h = compact ? 118 : 132;
+  const w = compact ? (W < 460 ? 132 : 148) : 176;
+  const h = compact ? 122 : 136;
   const x = W - w - margin;
   const y = margin;
-  if (x < (compact ? 198 : 270)) return null;
-  drawSoftPanel(x, y, w, h, 16, .44);
+  if (x < (compact ? 202 : 280)) return null;
+  drawSoftPanel(x, y, w, h, 16, .50);
   ctx.textAlign = 'left';
   ctx.textBaseline = 'top';
-  ctx.fillStyle = 'rgba(149,228,255,.58)';
+  ctx.fillStyle = 'rgba(149,228,255,.68)';
   ctx.font = '700 10px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
   ctx.fillText('КОРАБЛЬ', x + 12, y + 11);
   const bw = w - 24;
@@ -193,32 +227,58 @@ function drawShipPanel(compact) {
   return { x, y, w, h };
 }
 
+function drawStackedHint(text, bottom, panelW, panelH, alpha = .40) {
+  const x = W / 2 - panelW / 2;
+  const y = bottom - panelH;
+  drawSoftPanel(x, y, panelW, panelH, 14, alpha);
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'top';
+  ctx.fillStyle = 'rgba(238,246,255,.72)';
+  ctx.font = '600 12px ui-sans-serif, system-ui';
+  drawWrappedText(text, x + 12, y + 9, panelW - 24, 15, panelH > 34 ? 2 : 1);
+  return y;
+}
+
+function isCompactObjectiveMessage(text) {
+  if (!objective || !text) return false;
+  const normalized = String(text).trim().toLowerCase();
+  const title = String(objective.title || '').trim().toLowerCase();
+  const condition = String(objective.condition || '').trim().toLowerCase();
+  return (title && normalized.startsWith(title)) || (condition && normalized.includes(condition));
+}
+
 function drawPlayHud() {
   const compact = W < 640 || H < 540;
   const margin = uiMargin();
   const scoreBox = drawScorePanel(margin, margin, compact);
-  const objY = scoreBox.y + scoreBox.h + (compact ? 8 : 10);
-  if (!compact || H > 520) drawObjectivePanel(margin, objY, compact);
-  drawShipPanel(compact);
+  const shipBox = drawShipPanel(compact);
+  const stackedMobile = compact && W < 520;
+  const objY = stackedMobile
+    ? Math.max(scoreBox.y + scoreBox.h, shipBox ? shipBox.y + shipBox.h : 0) + 8
+    : scoreBox.y + scoreBox.h + (compact ? 8 : 10);
+  let topClearY = Math.max(scoreBox.y + scoreBox.h, shipBox ? shipBox.y + shipBox.h : 0);
+  if ((!compact || H > 500) && objY < H - (W < 560 ? 126 : 138)) {
+    const objectiveBox = drawObjectivePanel(margin, objY, compact, !stackedMobile);
+    if (objectiveBox && objectiveBox.w > 0) topClearY = Math.max(topClearY, objectiveBox.y + objectiveBox.h);
+  }
+
+  const quickButtons = quickButtonRects();
+  const quickTop = quickButtons.length ? quickButtons[0].y - 6 : H;
   drawQuickButtons();
   if (navLayer) drawNavPanel();
 
+  let hintBottom = quickTop - (W < 560 ? 16 : 18);
   if (gravityAdviceTime > 0 && gravityAdvice) {
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'top';
-    ctx.fillStyle = 'rgba(238,246,255,.50)';
-    ctx.font = '600 12px ui-sans-serif, system-ui';
-    ctx.fillText(gravityAdvice, W / 2, H - (W < 560 ? 78 : 70));
+    const w = Math.min(360, W - 36);
+    hintBottom = drawStackedHint(gravityAdvice, hintBottom, w, 30, .38) - 8;
   }
 
   if (tutorialHintTime > 0 && tutorialHint) {
-    const hintW = Math.min(260, W - 36);
-    ctx.textAlign = 'left';
-    ctx.textBaseline = 'top';
-    ctx.fillStyle = 'rgba(238,246,255,.62)';
-    ctx.font = '600 12px ui-sans-serif, system-ui';
-    drawWrappedText(tutorialHint, W / 2 - hintW / 2, H - (W < 560 ? 108 : 100), hintW, 15, 2);
+    const hintW = Math.min(W < 560 ? 286 : 340, W - 36);
+    drawStackedHint(tutorialHint, hintBottom, hintW + 16, 46, .40);
   }
+
+  return { topClearY, quickTop };
 }
 
 function drawHud() {
@@ -226,14 +286,27 @@ function drawHud() {
   ctx.textBaseline = 'top';
   ctx.textAlign = 'left';
 
-  if (state === 'play' && player) drawPlayHud();
+  const playHudLayout = state === 'play' && player ? drawPlayHud() : null;
 
   if (state === 'play' && message && messageTime > 0) {
     const a = clamp(messageTime, 0, 1);
-    ctx.textAlign = 'center';
-    ctx.fillStyle = `rgba(238,246,255,${.20 + a * .62})`;
-    ctx.font = '600 17px ui-sans-serif, system-ui';
-    ctx.fillText(message, W / 2, 20);
+    const narrow = W < 560;
+    const shortMobile = narrow && H < 700;
+    if (shortMobile && isCompactObjectiveMessage(message)) {
+      ctx.restore();
+      return;
+    }
+    const bannerH = narrow ? 30 : 36;
+    const gap = narrow ? 12 : 18;
+    const w = Math.min(narrow ? W - 32 : 520, W - 36);
+    const y = narrow && playHudLayout ? playHudLayout.topClearY + 8 : 14;
+    if (!playHudLayout || y + bannerH <= playHudLayout.quickTop - gap) {
+      drawSoftPanel(W / 2 - w / 2, y, w, bannerH, 14, .35 + a * .14);
+      ctx.textAlign = 'left';
+      ctx.fillStyle = `rgba(238,246,255,${.34 + a * .58})`;
+      ctx.font = `700 ${narrow ? 12 : 15}px ui-sans-serif, system-ui`;
+      fillFittedText(message, W / 2 - w / 2 + 14, y + (narrow ? 8 : 10), w - 28);
+    }
   }
 
   if (state === 'menu') drawOverlay('ORBIT DRIFT', 'Лети от звезды к звезде. Гравитация меняет курс.', 'В полёт');
@@ -251,25 +324,16 @@ function drawNavPanel() {
   const dom = g.body;
   const orb = orbitalElements(dom);
   const speed = hypot(player.vx, player.vy);
-  const panelW = compact ? 252 : 318;
-  const panelH = compact ? 156 : 226;
+  const panelW = compact ? 258 : 326;
+  const panelH = compact ? 164 : 232;
   const bottomReserve = state === 'play' ? (W < 560 ? 58 : 66) : 18;
   const x = W - panelW - uiMargin();
   const topClear = compact ? 142 : 164;
   const y = compact ? Math.max(topClear, H - panelH - bottomReserve) : Math.min(topClear, H - panelH - bottomReserve);
 
   ctx.save();
-  ctx.globalAlpha = .96;
-  const grd = ctx.createLinearGradient(x, y, x + panelW, y + panelH);
-  grd.addColorStop(0, 'rgba(4, 11, 24, .58)');
-  grd.addColorStop(1, 'rgba(2, 7, 18, .36)');
-  ctx.fillStyle = grd;
-  roundRect(x, y, panelW, panelH, 14);
-  ctx.fill();
-  ctx.strokeStyle = 'rgba(146,221,255,.13)';
-  ctx.lineWidth = 1;
-  roundRect(x, y, panelW, panelH, 14);
-  ctx.stroke();
+  ctx.globalAlpha = .98;
+  drawSoftPanel(x, y, panelW, panelH, 14, .54);
 
   ctx.font = '11px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
   ctx.textAlign = 'left';
@@ -279,7 +343,7 @@ function drawNavPanel() {
     ctx.fillStyle = 'rgba(238,246,255,.34)';
     ctx.fillText(k, x + 14, yy);
     ctx.fillStyle = hue == null ? 'rgba(238,246,255,.78)' : `hsla(${hue},92%,78%,.82)`;
-    ctx.fillText(v, x + (compact ? 88 : 106), yy);
+    fillFittedText(v, x + (compact ? 88 : 108), yy, panelW - (compact ? 104 : 124));
     yy += compact ? 15 : 17;
   };
   ctx.fillStyle = 'rgba(149,228,255,.82)';
@@ -376,15 +440,16 @@ function hitRect(x, y, r) {
 function quickButtonRects() {
   if (state !== 'play') return [];
   const short = W < 560;
-  const w = short ? 36 : 58;
-  const h = 28;
   const gap = short ? 6 : 8;
-  const y = H - h - (short ? 14 : 18);
   const labels = short
-    ? [ ['−', 'zoomOut'], ['+', 'zoomIn'], ['зв', 'sound'], ['нав', 'nav'], ['G', 'gravity'], ['ц', 'route'], ['меню', 'menu'] ]
+    ? [ ['−', 'zoomOut'], ['+', 'zoomIn'], [soundOn ? 'зв' : 'тих', 'sound'], ['нав', 'nav'], ['G', 'gravity'], ['ц', 'route'], ['меню', 'menu'] ]
     : [ ['−', 'zoomOut'], ['+', 'zoomIn'], [soundOn ? 'звук' : 'тихо', 'sound'], [navLayer ? 'нав' : 'нав-', 'nav'], [gravityLayer ? 'поле' : 'поле-', 'gravity'], ['цель', 'route'], ['меню', 'menu'] ];
+  const side = short ? 12 : 18;
+  const w = short ? clamp(Math.floor((W - side * 2 - gap * (labels.length - 1)) / labels.length), 34, 40) : 60;
+  const h = short ? 32 : 34;
+  const y = H - h - (short ? 14 : 18);
   const total = labels.length * w + (labels.length - 1) * gap;
-  let x = W - total - (short ? 12 : 18);
+  let x = W - total - side;
   return labels.map(([label, action]) => {
     const rect = { x, y, w, h, label, action };
     x += w + gap;
@@ -396,62 +461,93 @@ function drawQuickButtons() {
   const buttons = quickButtonRects();
   if (!buttons.length) return;
   ctx.save();
+  const first = buttons[0];
+  const last = buttons[buttons.length - 1];
+  drawSoftPanel(first.x - 6, first.y - 6, last.x + last.w - first.x + 12, first.h + 12, 17, .40);
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.font = '10px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
   for (const b of buttons) {
     const active = b.action === 'sound' ? soundOn : b.action === 'nav' ? navLayer : b.action === 'gravity' ? gravityLayer : true;
-    ctx.fillStyle = active ? 'rgba(7,17,34,.42)' : 'rgba(7,17,34,.20)';
+    const primary = b.action === 'zoomIn' || b.action === 'zoomOut' || b.action === 'route';
+    const hue = b.action === 'gravity' ? 210 : (b.action === 'route' ? 48 : 196);
+    ctx.fillStyle = active
+      ? (primary ? `hsla(${hue},72%,44%,.18)` : 'rgba(9,24,45,.58)')
+      : 'rgba(7,13,24,.42)';
     roundRect(b.x, b.y, b.w, b.h, 12);
     ctx.fill();
-    ctx.strokeStyle = active ? 'rgba(148,226,255,.20)' : 'rgba(148,226,255,.08)';
+    ctx.strokeStyle = active ? `hsla(${hue},92%,74%,.34)` : 'rgba(148,226,255,.12)';
     ctx.lineWidth = 1;
     roundRect(b.x, b.y, b.w, b.h, 12);
     ctx.stroke();
-    ctx.fillStyle = active ? 'rgba(224,244,255,.72)' : 'rgba(224,244,255,.32)';
-    ctx.fillText(b.label, b.x + b.w / 2, b.y + b.h / 2 + .5);
+    if (active && (b.action === 'sound' || b.action === 'nav' || b.action === 'gravity')) {
+      ctx.fillStyle = `hsla(${hue},94%,72%,.76)`;
+      roundRect(b.x + 8, b.y + b.h - 5, b.w - 16, 2, 1);
+      ctx.fill();
+    }
+    ctx.fillStyle = active ? 'rgba(232,248,255,.88)' : 'rgba(224,244,255,.42)';
+    ctx.font = '700 10px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
+    ctx.fillText(fitText(b.label, b.w - 8), b.x + b.w / 2, b.y + b.h / 2 + .5);
   }
   ctx.restore();
 }
 
 function overlayMetrics(menu = state === 'menu') {
   const narrow = W < 540;
-  const boxW = Math.min(menu ? (narrow ? W - 28 : 660) : (narrow ? W - 30 : 540), W - 28);
-  const desiredH = menu ? (narrow ? 468 : 430) : (narrow ? 312 : 286);
-  const boxH = Math.min(desiredH, H - 28);
+  const maxH = Math.max(260, H - 24);
+  const desiredH = menu ? (narrow ? 496 : 430) : (narrow ? 326 : 292);
+  const minH = menu ? (narrow ? 392 : 380) : (narrow ? 286 : 264);
+  const boxW = Math.min(menu ? (narrow ? W - 24 : 680) : (narrow ? W - 28 : 540), W - 24);
+  const boxH = clamp(desiredH, Math.min(minH, maxH), maxH);
   return { boxW, boxH, x: W / 2 - boxW / 2, y: H / 2 - boxH / 2 };
 }
 
-function menuDifficultyRects() {
+function menuLayout() {
   const m = overlayMetrics(true);
-  const cols = W < 540 ? 1 : 3;
-  const gap = W < 540 ? 8 : 10;
-  const pad = W < 540 ? 18 : 24;
+  const narrow = W < 540;
+  const tight = narrow && m.boxH < 430;
+  const pad = narrow ? 18 : 24;
+  const gap = narrow ? 7 : 10;
+  const rows = narrow ? DIFFICULTIES.length : 1;
+  const cols = narrow ? 1 : DIFFICULTIES.length;
+  const titleY = m.y + (tight ? 30 : (narrow ? 38 : 42));
+  const subtitleY = m.y + (tight ? 56 : (narrow ? 68 : 72));
+  const metaY = m.y + (tight ? 82 : (narrow ? 98 : 104));
+  const cardsY = m.y + (tight ? 104 : (narrow ? 124 : 140));
+  const controlsY = m.y + m.boxH - (tight ? 24 : (narrow ? 28 : 24));
+  const startY = controlsY - (tight ? 50 : (narrow ? 56 : 54));
+  const soundY = startY - (tight ? 40 : (narrow ? 44 : 48));
+  const cardMaxBottom = soundY - (tight ? 8 : (narrow ? 12 : 18));
   const usable = m.boxW - pad * 2;
-  const w = (usable - gap * (cols - 1)) / cols;
-  const h = W < 540 ? 56 : 82;
-  const startY = m.y + (W < 540 ? 126 : 140);
+  const cardW = (usable - gap * (cols - 1)) / cols;
+  const cardH = narrow
+    ? clamp((cardMaxBottom - cardsY - gap * (rows - 1)) / rows, tight ? 30 : 42, 62)
+    : clamp(cardMaxBottom - cardsY, 74, 88);
+  return { ...m, narrow, tight, pad, gap, rows, cols, titleY, subtitleY, metaY, cardsY, controlsY, startY, soundY, cardW, cardH };
+}
+
+function menuDifficultyRects() {
+  const m = menuLayout();
   return DIFFICULTIES.map((d, i) => {
-    const col = i % cols;
-    const row = Math.floor(i / cols);
-    return { x: m.x + pad + col * (w + gap), y: startY + row * (h + gap), w, h, index: i, d };
+    const col = i % m.cols;
+    const row = Math.floor(i / m.cols);
+    return { x: m.x + m.pad + col * (m.cardW + m.gap), y: m.cardsY + row * (m.cardH + m.gap), w: m.cardW, h: m.cardH, index: i, d };
   });
 }
 
 function menuSoundRect() {
   const isMenu = state === 'menu';
-  const m = overlayMetrics(isMenu);
+  const m = isMenu ? menuLayout() : overlayMetrics(false);
   const w = Math.min(isMenu ? 184 : 174, m.boxW - 48);
   const h = 34;
-  return { x: W / 2 - w / 2, y: m.y + m.boxH - (isMenu ? (W < 540 ? 128 : 120) : 88), w, h };
+  return { x: W / 2 - w / 2, y: isMenu ? m.soundY : m.y + m.boxH - 88, w, h };
 }
 
 function menuStartRect() {
   const isMenu = state === 'menu';
-  const m = overlayMetrics(isMenu);
+  const m = isMenu ? menuLayout() : overlayMetrics(false);
   const w = Math.min(230, m.boxW - 56);
-  const h = 40;
-  return { x: W / 2 - w / 2, y: m.y + m.boxH - (isMenu ? (W < 540 ? 82 : 74) : 48), w, h };
+  const h = isMenu ? 42 : 40;
+  return { x: W / 2 - w / 2, y: isMenu ? m.startY : m.y + m.boxH - 48, w, h };
 }
 
 function handleUiTap(x, y) {
@@ -499,9 +595,56 @@ function handleUiTap(x, y) {
   return false;
 }
 
+function drawOverlayButton(r, label, primary = false, active = true) {
+  const hue = primary ? 190 : 205;
+  const grd = ctx.createLinearGradient(r.x, r.y, r.x, r.y + r.h);
+  grd.addColorStop(0, primary ? 'rgba(91, 224, 255, .24)' : (active ? 'rgba(22, 54, 86, .60)' : 'rgba(9, 14, 24, .58)'));
+  grd.addColorStop(1, primary ? 'rgba(24, 116, 164, .20)' : (active ? 'rgba(8, 22, 40, .52)' : 'rgba(5, 8, 16, .44)'));
+  ctx.fillStyle = grd;
+  roundRect(r.x, r.y, r.w, r.h, Math.min(18, r.h / 2));
+  ctx.fill();
+  ctx.strokeStyle = primary ? 'rgba(151,235,255,.64)' : (active ? 'rgba(132,226,255,.34)' : 'rgba(132,226,255,.14)');
+  ctx.lineWidth = primary ? 1.35 : 1;
+  roundRect(r.x, r.y, r.w, r.h, Math.min(18, r.h / 2));
+  ctx.stroke();
+  ctx.fillStyle = primary ? `hsla(${hue}, 96%, 88%, .98)` : (active ? 'rgba(232,248,255,.88)' : 'rgba(232,248,255,.46)');
+  ctx.font = primary ? '800 13px ui-sans-serif, system-ui' : '700 11px ui-sans-serif, system-ui';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(fitText(label, r.w - 22), r.x + r.w / 2, r.y + r.h / 2 + .5);
+}
+
+function drawMenuControlChips(layout) {
+  const labels = layout.narrow
+    ? ['держи экран: тяга', 'два пальца: масштаб']
+    : ['мышь/экран: тяга', 'R цель', 'G поле', 'N навигация'];
+  const gap = layout.narrow ? 6 : 8;
+  const h = 24;
+  ctx.save();
+  ctx.font = '700 10px ui-sans-serif, system-ui';
+  const widths = labels.map(label => Math.min(layout.narrow ? 138 : 132, ctx.measureText(label).width + 22));
+  const total = widths.reduce((sum, w) => sum + w, 0) + gap * (labels.length - 1);
+  let x = W / 2 - total / 2;
+  const y = layout.controlsY - (layout.narrow ? 4 : 2);
+  for (let i = 0; i < labels.length; i++) {
+    ctx.fillStyle = 'rgba(238,246,255,.055)';
+    roundRect(x, y, widths[i], h, 12);
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(132,226,255,.16)';
+    roundRect(x, y, widths[i], h, 12);
+    ctx.stroke();
+    ctx.fillStyle = 'rgba(238,246,255,.62)';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(fitText(labels[i], widths[i] - 14), x + widths[i] / 2, y + h / 2 + .5);
+    x += widths[i] + gap;
+  }
+  ctx.restore();
+}
+
 function drawOverlay(title, subtitle, action) {
   const menu = state === 'menu';
-  const m = overlayMetrics(menu);
+  const m = menu ? menuLayout() : overlayMetrics(false);
   const { boxW, boxH, x, y } = m;
   const narrow = W < 540;
   ctx.save();
@@ -509,123 +652,100 @@ function drawOverlay(title, subtitle, action) {
   ctx.textBaseline = 'middle';
 
   const grd = ctx.createLinearGradient(x, y, x + boxW, y + boxH);
-  grd.addColorStop(0, menu ? 'rgba(8, 20, 42, .92)' : 'rgba(7, 16, 34, .80)');
-  grd.addColorStop(1, menu ? 'rgba(1, 6, 18, .86)' : 'rgba(1, 5, 15, .58)');
+  grd.addColorStop(0, menu ? 'rgba(11, 28, 56, .94)' : 'rgba(18, 20, 35, .88)');
+  grd.addColorStop(.58, menu ? 'rgba(4, 14, 32, .90)' : 'rgba(9, 13, 27, .80)');
+  grd.addColorStop(1, menu ? 'rgba(1, 5, 15, .88)' : 'rgba(4, 6, 15, .72)');
   ctx.fillStyle = grd;
-  roundRect(x, y, boxW, boxH, 24);
+  roundRect(x, y, boxW, boxH, 22);
   ctx.fill();
-  ctx.strokeStyle = menu ? 'rgba(158,229,255,.34)' : 'rgba(148,218,255,.15)';
-  ctx.lineWidth = menu ? 1.35 : 1;
-  roundRect(x, y, boxW, boxH, 24);
+  ctx.strokeStyle = menu ? 'rgba(158,229,255,.42)' : 'rgba(255,128,128,.22)';
+  ctx.lineWidth = 1.25;
+  roundRect(x, y, boxW, boxH, 22);
+  ctx.stroke();
+  ctx.strokeStyle = 'rgba(255,255,255,.055)';
+  ctx.beginPath();
+  ctx.moveTo(x + 22, y + 1);
+  ctx.lineTo(x + boxW - 22, y + 1);
   ctx.stroke();
 
   ctx.fillStyle = 'rgba(248,252,255,.98)';
-  ctx.font = menu ? `${Math.round((narrow ? 28 : 34) * uiScale)}px ui-sans-serif, system-ui` : `${Math.round((narrow ? 26 : 32) * uiScale)}px ui-sans-serif, system-ui`;
-  ctx.fillText(title, W / 2, y + (menu ? 42 : 44));
+  ctx.font = menu ? `${Math.round((narrow ? 30 : 36) * uiScale)}px ui-sans-serif, system-ui` : `${Math.round((narrow ? 27 : 32) * uiScale)}px ui-sans-serif, system-ui`;
+  ctx.fillText(fitText(title, boxW - 44), W / 2, menu ? m.titleY : y + 45);
   ctx.fillStyle = menu ? 'rgba(238,246,255,.80)' : 'rgba(238,246,255,.64)';
   ctx.font = `${narrow ? 12 : 13}px ui-sans-serif, system-ui`;
-  ctx.fillText(subtitle, W / 2, y + (menu ? 74 : 76));
+  ctx.fillText(fitText(subtitle, boxW - 48), W / 2, menu ? m.subtitleY : y + 76);
 
   if (menu) {
     ctx.fillStyle = 'rgba(169,222,255,.72)';
     ctx.font = '10px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
-    ctx.fillText('3 режима · сила поля / дальность / контроль', W / 2, y + 104);
+    ctx.fillText('3 режима · поле / дальность / контроль', W / 2, m.metaY);
 
     for (const r of menuDifficultyRects()) {
       const active = r.index === difficultyIndex;
       const d = r.d;
-      ctx.fillStyle = active ? 'rgba(18, 48, 90, .78)' : 'rgba(6, 18, 38, .62)';
-      roundRect(r.x, r.y, r.w, r.h, 15);
+      const card = ctx.createLinearGradient(r.x, r.y, r.x + r.w, r.y + r.h);
+      card.addColorStop(0, active ? 'rgba(30, 72, 118, .84)' : 'rgba(8, 23, 45, .66)');
+      card.addColorStop(1, active ? 'rgba(8, 28, 56, .76)' : 'rgba(4, 12, 27, .56)');
+      ctx.fillStyle = card;
+      roundRect(r.x, r.y, r.w, r.h, 14);
       ctx.fill();
-      ctx.strokeStyle = active ? 'rgba(154,235,255,.72)' : 'rgba(139,230,255,.24)';
+      ctx.strokeStyle = active ? 'rgba(154,235,255,.82)' : 'rgba(139,230,255,.22)';
       ctx.lineWidth = active ? 1.5 : 1;
-      roundRect(r.x, r.y, r.w, r.h, 15);
+      roundRect(r.x, r.y, r.w, r.h, 14);
       ctx.stroke();
+      ctx.fillStyle = active ? 'rgba(132,226,255,.84)' : 'rgba(132,226,255,.28)';
+      roundRect(r.x + 9, r.y + 9, 3, r.h - 18, 2);
+      ctx.fill();
 
       ctx.textAlign = narrow ? 'left' : 'center';
-      const tx = narrow ? r.x + 14 : r.x + r.w / 2;
+      const tx = narrow ? r.x + 20 : r.x + r.w / 2;
       ctx.fillStyle = active ? 'rgba(248,252,255,.98)' : 'rgba(238,248,255,.86)';
-      ctx.font = '700 13px ui-sans-serif, system-ui';
-      ctx.fillText(`${d.label || d.name}`, tx, r.y + (narrow ? 17 : 18));
-      ctx.fillStyle = active ? 'rgba(158,235,255,.92)' : 'rgba(132,226,255,.68)';
-      ctx.font = '10px ui-sans-serif, system-ui';
-      ctx.fillText(d.title, tx, r.y + (narrow ? 34 : 38));
+      ctx.font = '800 13px ui-sans-serif, system-ui';
+      ctx.fillText(fitText(`${d.label || d.name}`, narrow ? r.w - 78 : r.w - 22), tx, r.y + (narrow ? (r.h < 38 ? 14 : 15) : 18));
+      if (r.h >= 38) {
+        ctx.fillStyle = active ? 'rgba(158,235,255,.92)' : 'rgba(132,226,255,.68)';
+        ctx.font = '10px ui-sans-serif, system-ui';
+        ctx.fillText(fitText(d.title, narrow ? r.w - 40 : r.w - 22), tx, r.y + (narrow ? 31 : 37));
+      }
       if (!narrow) {
-        ctx.fillStyle = 'rgba(238,246,255,.54)';
-        ctx.font = '9px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
-        ctx.fillText(`поле ${fmtNum(d.gravity, 2)} · дальн. ${fmtNum(d.targetMax, 2)}`, tx, r.y + r.h - 15);
         ctx.fillStyle = 'rgba(255,214,145,.68)';
         ctx.font = '9px ui-sans-serif, system-ui';
-        ctx.fillText(`${d.riskText} · ${d.rewardText}`, tx, r.y + r.h - 30);
+        ctx.fillText(fitText(`${d.riskText} · ${d.rewardText}`, r.w - 18), tx, r.y + r.h - 32);
+        ctx.fillStyle = 'rgba(238,246,255,.54)';
+        ctx.font = '9px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
+        ctx.fillText(`поле ${fmtNum(d.gravity, 2)} · дальн. ${fmtNum(d.targetMax, 2)}`, tx, r.y + r.h - 16);
       } else {
         ctx.textAlign = 'right';
         ctx.fillStyle = 'rgba(238,246,255,.58)';
         ctx.font = '9px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
-        ctx.fillText(`${d.name}`, r.x + r.w - 14, r.y + 17);
+        ctx.fillText(`${d.name}`, r.x + r.w - 14, r.y + 15);
+        if (r.h > 52) {
+          ctx.fillStyle = 'rgba(255,214,145,.60)';
+          ctx.font = '9px ui-sans-serif, system-ui';
+          ctx.fillText(fitText(d.riskText, 90), r.x + r.w - 14, r.y + r.h - 14);
+        }
       }
     }
 
-    ctx.textAlign = 'center';
-    const sr = menuSoundRect();
-    ctx.fillStyle = soundOn ? 'rgba(8, 30, 52, .70)' : 'rgba(8, 12, 22, .58)';
-    roundRect(sr.x, sr.y, sr.w, sr.h, 17);
-    ctx.fill();
-    ctx.strokeStyle = soundOn ? 'rgba(132,226,255,.44)' : 'rgba(132,226,255,.18)';
-    roundRect(sr.x, sr.y, sr.w, sr.h, 17);
-    ctx.stroke();
-    ctx.fillStyle = soundOn ? 'rgba(232,248,255,.92)' : 'rgba(232,248,255,.54)';
-    ctx.font = '11px ui-sans-serif, system-ui';
-    ctx.fillText(soundOn ? 'Звук включён' : 'Звук выключен', sr.x + sr.w / 2, sr.y + sr.h / 2 + .5);
-
-    const st = menuStartRect();
-    ctx.fillStyle = 'rgba(132,226,255,.18)';
-    roundRect(st.x, st.y, st.w, st.h, 18);
-    ctx.fill();
-    ctx.strokeStyle = 'rgba(132,226,255,.58)';
-    roundRect(st.x, st.y, st.w, st.h, 18);
-    ctx.stroke();
-    ctx.fillStyle = 'rgba(186,242,255,.98)';
-    ctx.font = '700 13px ui-sans-serif, system-ui';
-    ctx.fillText(action, st.x + st.w / 2, st.y + st.h / 2 + .5);
-
-    ctx.fillStyle = 'rgba(238,246,255,.56)';
-    ctx.font = '10px ui-sans-serif, system-ui';
-    const controls = narrow ? 'удерживай экран: двигатель · двумя пальцами меняй масштаб' : 'удерживай мышь или экран: двигатель · отпусти: полёт по инерции · R смена цели · G поле гравитации · N навигация';
-    ctx.textAlign = 'left';
-    drawWrappedText(controls, x + 24, y + boxH - (narrow ? 28 : 24), boxW - 48, 12, 1);
+    drawOverlayButton(menuSoundRect(), soundOn ? 'Звук включён' : 'Звук выключен', false, soundOn);
+    drawOverlayButton(menuStartRect(), action, true, true);
+    drawMenuControlChips(m);
   } else {
-    const summaryY = y + 108;
-    ctx.fillStyle = 'rgba(238,246,255,.88)';
-    ctx.font = `${narrow ? 28 : 34}px ui-sans-serif, system-ui`;
+    const summaryY = y + (narrow ? 130 : 124);
+    const scoreBoxW = Math.min(220, boxW - 72);
+    drawSoftPanel(W / 2 - scoreBoxW / 2, summaryY - 36, scoreBoxW, 86, 16, .42);
+    ctx.fillStyle = 'rgba(248,252,255,.94)';
+    ctx.font = `${narrow ? 30 : 36}px ui-sans-serif, system-ui`;
     ctx.fillText(String(score), W / 2, summaryY);
-    ctx.fillStyle = 'rgba(238,246,255,.42)';
+    ctx.fillStyle = 'rgba(238,246,255,.50)';
     ctx.font = '11px ui-sans-serif, system-ui';
     ctx.fillText(`очков · рекорд ${best}`, W / 2, summaryY + 34);
-    ctx.fillStyle = 'rgba(169,222,255,.46)';
+    ctx.fillStyle = 'rgba(169,222,255,.58)';
     ctx.font = '10px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
-    ctx.fillText(`${difficulty.label || difficulty.name} · карта ${mapCode}`, W / 2, summaryY + 55);
+    ctx.fillText(fitText(`${difficulty.label || difficulty.name} · карта ${mapCode}`, boxW - 64), W / 2, summaryY + 58);
 
-    const sr = menuSoundRect();
-    ctx.fillStyle = soundOn ? 'rgba(8, 26, 44, .46)' : 'rgba(8, 12, 22, .32)';
-    roundRect(sr.x, sr.y, sr.w, sr.h, 17);
-    ctx.fill();
-    ctx.strokeStyle = soundOn ? 'rgba(132,226,255,.22)' : 'rgba(132,226,255,.09)';
-    roundRect(sr.x, sr.y, sr.w, sr.h, 17);
-    ctx.stroke();
-    ctx.fillStyle = soundOn ? 'rgba(232,248,255,.76)' : 'rgba(232,248,255,.36)';
-    ctx.font = '11px ui-sans-serif, system-ui';
-    ctx.fillText(soundOn ? 'Звук включён' : 'Звук выключен', sr.x + sr.w / 2, sr.y + sr.h / 2 + .5);
-
-    const st = menuStartRect();
-    ctx.fillStyle = 'rgba(132,226,255,.10)';
-    roundRect(st.x, st.y, st.w, st.h, 18);
-    ctx.fill();
-    ctx.strokeStyle = 'rgba(132,226,255,.30)';
-    roundRect(st.x, st.y, st.w, st.h, 18);
-    ctx.stroke();
-    ctx.fillStyle = 'rgba(132,226,255,.9)';
-    ctx.font = '700 13px ui-sans-serif, system-ui';
-    ctx.fillText(action, st.x + st.w / 2, st.y + st.h / 2 + .5);
+    drawOverlayButton(menuSoundRect(), soundOn ? 'Звук включён' : 'Звук выключен', false, soundOn);
+    drawOverlayButton(menuStartRect(), action, true, true);
   }
   ctx.restore();
 }
