@@ -128,6 +128,107 @@ function assertGeneratedWorld() {
   assert(result.hasObjective, 'target objective is missing or detached');
 }
 
+function assertObjectiveHudFields() {
+  const result = evaluate(`(() => {
+    const samples = [];
+    const kinds = [
+      { kind: 'star', family: 'main', class: 'G', luminosity: 1, reward: 3 },
+      { kind: 'star', family: 'main', class: 'O', luminosity: 42, reward: 5 },
+      { kind: 'star', family: 'neutron', class: 'NS', luminosity: 8, reward: 7 },
+      { kind: 'planet', reward: 3 },
+      { kind: 'comet', reward: 4 },
+      { kind: 'asteroid', reward: 2 }
+    ];
+
+    for (const base of kinds) {
+      for (let id = 1; id <= 160; id += 1) {
+        const body = {
+          ...base,
+          id,
+          x: id * 37 + (base.kind.length * 11),
+          y: -id * 29 + ((base.reward || 1) * 17)
+        };
+        samples.push(buildObjective(body));
+      }
+    }
+
+    const requiredTypes = ['survey', 'orbit', 'sling', 'skim', 'rendezvous', 'tide', 'silent'];
+    const readableString = value => typeof value === 'string' && value.trim().length >= 2;
+    return {
+      generatedHasHudFields:
+        !!objective
+        && readableString(objective.title)
+        && readableString(objective.risk)
+        && readableString(objective.reward)
+        && readableString(objective.code)
+        && readableString(objective.hint),
+      generatedHasCondition: !!objective && readableString(objectiveVerb(objective)),
+      generatedMetaReadable: !!objective && objectiveMetaText(objective).includes(objective.risk) && objectiveMetaText(objective).includes(objective.reward),
+      allTypesCovered: requiredTypes.every(type => samples.some(obj => obj.type === type)),
+      allSamplesReadable: samples.every(obj =>
+        obj
+        && readableString(objectiveVerb(obj))
+        && readableString(obj.title)
+        && readableString(obj.risk)
+        && readableString(obj.reward)
+        && readableString(obj.code)
+        && readableString(obj.hint)
+        && Number.isFinite(Number(obj.bonus))
+        && Number.isFinite(Number(obj.bodyId))
+      )
+    };
+  })()`);
+
+  assert(result.generatedHasHudFields, 'generated objective must expose title/risk/reward/code/hint for HUD');
+  assert(result.generatedHasCondition, 'generated objective must expose a readable condition for HUD');
+  assert(result.generatedMetaReadable, 'objective meta text must include risk and reward');
+  assert(result.allTypesCovered, 'objective samples should cover every objective type');
+  assert(result.allSamplesReadable, 'every objective type must expose readable HUD fields');
+}
+
+function assertOptionalMenuReturnUx() {
+  const result = evaluate(`(() => {
+    function quickMenuButton() {
+      state = 'play';
+      W = 1280;
+      H = 720;
+      return quickButtonRects().find(button => button.action === 'menu') || null;
+    }
+
+    const menuButton = quickMenuButton();
+    const hasReturnFunction = typeof returnToDifficultyMenu === 'function';
+    let directReturnOk = true;
+    let tapReturnOk = true;
+
+    if (hasReturnFunction) {
+      startGame();
+      returnToDifficultyMenu();
+      directReturnOk = state === 'menu' && menuDifficultyRects().length === DIFFICULTIES.length;
+    }
+
+    if (menuButton) {
+      startGame();
+      W = 1280;
+      H = 720;
+      const liveMenuButton = quickMenuButton();
+      tapReturnOk = !!liveMenuButton
+        && handleUiTap(liveMenuButton.x + liveMenuButton.w / 2, liveMenuButton.y + liveMenuButton.h / 2) === true
+        && state === 'menu'
+        && menuDifficultyRects().length === DIFFICULTIES.length;
+    }
+
+    return {
+      hasReturnFunction,
+      hasMenuQuickButton: !!menuButton,
+      directReturnOk,
+      tapReturnOk
+    };
+  })()`);
+
+  assert(result.directReturnOk, 'returnToDifficultyMenu must switch play state back to difficulty menu');
+  assert(result.tapReturnOk, 'quick button action menu must return to difficulty menu through UI handler');
+}
+
 function assertDeterministicFallbackTarget() {
   const result = evaluate(`(() => {
     const originalEnsureChunksAround = ensureChunksAround;
@@ -198,6 +299,8 @@ try {
   }
   assertDifficultyInvariants();
   assertGeneratedWorld();
+  assertObjectiveHudFields();
+  assertOptionalMenuReturnUx();
   assertDeterministicFallbackTarget();
   console.log('smoke: ok');
 } catch (error) {
