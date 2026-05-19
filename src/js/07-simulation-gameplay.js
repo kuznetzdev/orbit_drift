@@ -119,7 +119,8 @@ function updateGame(dt) {
   }
 
   player.trail.push({ x: player.x, y: player.y, speed, heat: player.heat });
-  if (player.trail.length > 150) player.trail.shift();
+  const trailLimit = renderQuality().trailLimit;
+  if (player.trail.length > trailLimit) player.trail.splice(0, player.trail.length - trailLimit);
 
   checkCollisionsAndScans(dt);
   checkLagrangeNodes(dt);
@@ -250,10 +251,33 @@ function updateThermalAndFuel(dt) {
   if (player.stress >= 1.08) endGame('Корабль не выдержал нагрузки');
 }
 
+function insertLagrangeNode(nodes, node, limit) {
+  let insertAt = nodes.length;
+  while (insertAt > 0 && node.d < nodes[insertAt - 1].d) insertAt--;
+  if (insertAt >= limit) return;
+  const nextLength = Math.min(nodes.length + 1, limit);
+  for (let i = nextLength - 1; i > insertAt; i--) nodes[i] = nodes[i - 1];
+  nodes[insertAt] = node;
+  nodes.length = nextLength;
+}
+
 function lagrangeNodesNearby(limit = 10) {
   if (!player) return [];
-  const byId = new Map();
-  for (const b of bodies) byId.set(b.id, b);
+  const quality = renderQuality();
+  const cacheLimit = Math.max(limit, quality.lagrangeLimit);
+  const length = bodies.length;
+  const firstId = length > 0 ? bodies[0].id : 0;
+  const lastId = length > 0 ? bodies[length - 1].id : 0;
+  const cacheValid = lagrangeNodesCache.source === bodies
+    && lagrangeNodesCache.length === length
+    && lagrangeNodesCache.firstId === firstId
+    && lagrangeNodesCache.lastId === lastId
+    && lagrangeNodesCache.limit >= cacheLimit
+    && frame - lagrangeNodesCache.frame <= quality.lagrangeFrameTtl
+    && hypot(player.x - lagrangeNodesCache.x, player.y - lagrangeNodesCache.y) <= quality.lagrangeMove;
+  if (cacheValid) return lagrangeNodesCache.nodes.slice(0, limit);
+
+  const byId = getBodyByIdIndex();
   const nodes = [];
   for (const p of bodies) {
     if (p.kind !== 'planet' || !p.parentId || p.home) continue;
@@ -274,10 +298,14 @@ function lagrangeNodesNearby(limit = 10) {
       const d = hypot(player.x - x, player.y - y);
       if (d > 2300) continue;
       const key = `${p.id}:${item.label}`;
-      nodes.push({ x, y, d, key, label: item.label, hue: p.hue, body: p, parent, stability, reward: 3 + Math.floor(stability) + (p.reward || 1) });
+      insertLagrangeNode(
+        nodes,
+        { x, y, d, key, label: item.label, hue: p.hue, body: p, parent, stability, reward: 3 + Math.floor(stability) + (p.reward || 1) },
+        cacheLimit
+      );
     }
   }
-  nodes.sort((a, b) => a.d - b.d);
+  lagrangeNodesCache = { source: bodies, frame, x: player.x, y: player.y, length, firstId, lastId, limit: cacheLimit, nodes };
   return nodes.slice(0, limit);
 }
 
@@ -393,7 +421,7 @@ function pointerWorld() {
 }
 
 function engineParticles(dt) {
-  const amount = Math.ceil(5 * dt * 60);
+  const amount = Math.ceil(renderQuality().engineParticleRate * dt * 60);
   for (let i = 0; i < amount; i++) {
     const a = player.angle + Math.PI + rnd(Math.random, -.34, .34);
     const speed = rnd(Math.random, 70, 160);
@@ -453,7 +481,7 @@ function updateParticles(dt) {
     p.vy *= Math.pow(p.drag || .98, dt * 60);
   }
   particles = particles.filter(p => p.life > 0);
-  const particleLimit = lowPower ? 220 : 420;
+  const particleLimit = renderQuality().particleLimit;
   if (particles.length > particleLimit) particles.splice(0, particles.length - particleLimit);
 }
 

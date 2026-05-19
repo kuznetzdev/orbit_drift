@@ -7,6 +7,7 @@
 'use strict';
 
 const visibleBodiesScratch = [];
+const visibleBodyScoresScratch = [];
 
 function draw() {
   drawBackground();
@@ -102,15 +103,45 @@ function drawCoordinateGrid() {
   ctx.restore();
 }
 
-function collectVisibleBodies(extra, out) {
+function insertVisibleBody(out, scores, body, score, limit) {
+  let insertAt = out.length;
+  while (insertAt > 0 && score < scores[insertAt - 1]) insertAt--;
+  if (insertAt >= limit) return;
+  const nextLength = Math.min(out.length + 1, limit);
+  for (let i = nextLength - 1; i > insertAt; i--) {
+    out[i] = out[i - 1];
+    scores[i] = scores[i - 1];
+  }
+  out[insertAt] = body;
+  scores[insertAt] = score;
+  out.length = nextLength;
+  scores.length = nextLength;
+}
+
+function visibleBodyScore(b) {
+  const dx = b.x - camera.x;
+  const dy = b.y - camera.y;
+  let score = dx * dx + dy * dy;
+  if (b.target) score -= 1000000000;
+  if (b.home) score -= 250000000;
+  if (b.kind === 'star' || b.kind === 'blackhole') score -= 70000000;
+  if (b.kind === 'comet') score -= 18000000;
+  return score;
+}
+
+function collectVisibleBodies(extra, out, limit = Infinity) {
   const left = camera.x - W / (2 * camera.zoom) - extra;
   const right = camera.x + W / (2 * camera.zoom) + extra;
   const top = camera.y - H / (2 * camera.zoom) - extra;
   const bottom = camera.y + H / (2 * camera.zoom) + extra;
   out.length = 0;
+  const scores = visibleBodyScoresScratch;
+  scores.length = 0;
   for (let i = 0; i < bodies.length; i++) {
     const b = bodies[i];
-    if (bodyIntersectsView(b, left, right, top, bottom)) out.push(b);
+    if (!bodyIntersectsView(b, left, right, top, bottom)) continue;
+    if (Number.isFinite(limit)) insertVisibleBody(out, scores, b, visibleBodyScore(b), limit);
+    else out.push(b);
   }
   return out;
 }
@@ -120,16 +151,19 @@ function visibleBodies(extra = 360) {
 }
 
 function rebuildGravityFieldCache() {
-  const spacing = lowPower ? 132 : (W < 740 ? 104 : 78);
+  const quality = renderQuality();
+  const spacing = W < 740 ? quality.fieldSpacingSmall : quality.fieldSpacing;
   const left = camera.x - W / (2 * camera.zoom) - spacing * 1.5;
   const right = camera.x + W / (2 * camera.zoom) + spacing * 1.5;
   const top = camera.y - H / (2 * camera.zoom) - spacing * 1.5;
   const bottom = camera.y + H / (2 * camera.zoom) + spacing * 1.5;
-  const sources = strongestGravitySources(lowPower ? 2600 : 3600, lowPower ? 8 : (W < 760 ? 11 : 15));
+  const sourceLimit = W < 760 ? quality.fieldSourceLimitSmall : quality.fieldSourceLimit;
+  const sources = strongestGravitySources(lowPower ? 2600 : 3600, sourceLimit);
   const lines = [];
 
   for (let x = Math.floor(left / spacing) * spacing; x < right; x += spacing) {
     for (let y = Math.floor(top / spacing) * spacing; y < bottom; y += spacing) {
+      if (lines.length >= quality.fieldMaxLines) break;
       const jitter = Math.sin(x * .011 + y * .017 + time * .55) * 5;
       const sx = x + jitter;
       const sy = y - jitter;
@@ -141,7 +175,7 @@ function rebuildGravityFieldCache() {
       let prevX = px;
       let prevY = py;
       const pts = [{ x: px, y: py }];
-      const steps = 3 + Math.floor(clamp(Math.log1p(mag) / 2.2, 0, 4));
+      const steps = Math.max(2, 3 + quality.fieldStepBias + Math.floor(clamp(Math.log1p(mag) / 2.2, 0, 4)));
       for (let step = 0; step < steps; step++) {
         const gg = gravityAtFrom(sources, px, py, false);
         const m = hypot(gg.ax, gg.ay) || 1;
@@ -156,6 +190,7 @@ function rebuildGravityFieldCache() {
       const alpha = clamp(.065 + Math.log1p(mag) / 6.4, .055, .62);
       lines.push({ pts, hue, alpha, mag, ax: px - prevX, ay: py - prevY });
     }
+    if (lines.length >= quality.fieldMaxLines) break;
   }
 
   gravityFieldCache = {
@@ -172,12 +207,13 @@ function rebuildGravityFieldCache() {
 
 function drawGravityField() {
   if (!gravityLayer) return;
+  const quality = renderQuality();
   const moved = !isFinite(gravityFieldCache.camX)
-    || hypot(camera.x - gravityFieldCache.camX, camera.y - gravityFieldCache.camY) > 42 / Math.max(camera.zoom, .2)
+    || hypot(camera.x - gravityFieldCache.camX, camera.y - gravityFieldCache.camY) > quality.fieldMovePx / Math.max(camera.zoom, .2)
     || Math.abs(camera.zoom - gravityFieldCache.zoom) > .04
     || gravityFieldCache.width !== W
     || gravityFieldCache.height !== H;
-  if (moved || frame - gravityFieldCache.frame > (lowPower ? 20 : 9)) rebuildGravityFieldCache();
+  if (moved || frame - gravityFieldCache.frame > quality.fieldCacheFrames) rebuildGravityFieldCache();
 
   ctx.save();
   ctx.lineCap = 'round';
@@ -195,7 +231,7 @@ function drawGravityField() {
       ctx.lineTo(sp.x, sp.y);
     }
     ctx.stroke();
-    if ((i + frame) % 3 === 0 && line.pts.length > 1) {
+    if ((i + frame) % quality.fieldArrowStride === 0 && line.pts.length > 1) {
       const last = line.pts[line.pts.length - 1];
       const tip = worldToScreen(last.x, last.y);
       const a = Math.atan2(line.ay, line.ax);
@@ -324,18 +360,19 @@ function drawGravityCompass() {
 
 function rebuildPredictionCache() {
   if (!player) return;
-  const sources = strongestGravitySources(lowPower ? 3600 : 5200, lowPower ? 9 : (W < 760 ? 12 : 18));
+  const quality = renderQuality();
+  const sourceLimit = W < 760 ? quality.predictionSourceLimitSmall : quality.predictionSourceLimit;
+  const sources = strongestGravitySources(quality.predictionSourceExtra, sourceLimit);
   let x = player.x;
   let y = player.y;
   let vx = player.vx;
   let vy = player.vy;
-  const dt = lowPower ? .078 : .062;
+  const dt = quality.predictionDt;
   const points = [{ x, y }];
-  const baseSteps = lowPower ? 54 : 96;
   const predictSteps = clamp(
-    Math.round(baseSteps * difficultyNumber('predictionStepsMul', 1)),
-    lowPower ? 26 : 36,
-    lowPower ? 124 : 220
+    Math.round(quality.predictionBaseSteps * difficultyNumber('predictionStepsMul', 1)),
+    quality.predictionMinSteps,
+    quality.predictionMaxSteps
   );
   for (let i = 0; i < predictSteps; i++) {
     const g0 = gravityAtFrom(sources, x, y, false);
@@ -359,9 +396,10 @@ function rebuildPredictionCache() {
 
 function drawPredictedPath() {
   if (!player || state === 'menu') return;
-  const stale = frame - predictionCache.frame > (lowPower ? 7 : 4)
-    || hypot(player.x - predictionCache.x, player.y - predictionCache.y) > (lowPower ? 36 : 22)
-    || hypot(player.vx - predictionCache.vx, player.vy - predictionCache.vy) > (lowPower ? 24 : 14);
+  const quality = renderQuality();
+  const stale = frame - predictionCache.frame > quality.predictionFrameTtl
+    || hypot(player.x - predictionCache.x, player.y - predictionCache.y) > quality.predictionMove
+    || hypot(player.vx - predictionCache.vx, player.vy - predictionCache.vy) > quality.predictionVelocity;
   if (stale) rebuildPredictionCache();
   const pts = predictionCache.points || [];
   if (pts.length < 2) return;
@@ -460,17 +498,22 @@ function drawRoute() {
 }
 
 function drawBodies() {
-  const list = collectVisibleBodies(450, visibleBodiesScratch);
-  for (let i = 0; i < list.length; i++) drawBodyFields(list[i]);
+  const quality = renderQuality();
+  const list = collectVisibleBodies(450, visibleBodiesScratch, quality.visibleBodyLimit);
+  for (let i = 0; i < list.length; i++) drawBodyFields(list[i], quality);
   for (let i = 0; i < list.length; i++) drawBodyCore(list[i]);
 }
 
-function drawBodyFields(b) {
+function drawBodyFields(b, quality = renderQuality()) {
   const s = worldToScreen(b.x, b.y);
   ctx.save();
   ctx.lineWidth = 1;
 
-  const levels = b.kind === 'blackhole' || b.family === 'neutron' ? [1.2, 2.8, 6.4, 14, 32, 72, 160] : [1, 2.6, 7, 18, 48];
+  const compactLevels = b.kind === 'blackhole' || b.family === 'neutron';
+  const lowDetail = quality === QUALITY_LOW && !b.target;
+  const levels = compactLevels
+    ? (lowDetail ? [1.8, 7, 32, 120] : [1.2, 2.8, 6.4, 14, 32, 72, 160])
+    : (lowDetail ? [1.4, 6, 28] : [1, 2.6, 7, 18, 48]);
   for (let i = 0; i < levels.length; i++) {
     const rr = Math.sqrt(Math.max(b.mu || 0, 1) / levels[i]);
     if (!isFinite(rr) || rr < b.r * 1.4 || rr > b.field * .96) continue;
@@ -493,7 +536,7 @@ function drawBodyFields(b) {
     ctx.stroke();
   }
 
-  for (let i = 0; i < 2; i++) {
+  for (let i = 0; i < quality.bodyFieldPulseCount; i++) {
     const k = .38 + i * .30;
     const r = b.field * k * camera.zoom + Math.sin(time * (.7 + i * .12) + b.phase) * 3;
     ctx.strokeStyle = `hsla(${b.hue}, 90%, 70%, ${.024 + i * .015})`;
@@ -502,7 +545,7 @@ function drawBodyFields(b) {
     ctx.stroke();
   }
 
-  if (b.soi && b.parentId) {
+  if (b.soi && b.parentId && (!lowDetail || b.target)) {
     ctx.strokeStyle = `hsla(${b.hue}, 88%, 74%, .045)`;
     ctx.setLineDash([1, 16]);
     ctx.lineDashOffset = time * 10;

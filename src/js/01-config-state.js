@@ -158,7 +158,72 @@ let tutorialHintTime = 0;
 let tutorialStage = 0;
 let gravityFieldCache = { frame: -999, camX: NaN, camY: NaN, zoom: NaN, width: 0, height: 0, lines: [] };
 let predictionCache = { frame: -999, x: NaN, y: NaN, vx: NaN, vy: NaN, points: [] };
+let lagrangeNodesCache = { source: null, frame: -999, x: NaN, y: NaN, length: -1, firstId: 0, lastId: 0, limit: 0, nodes: [] };
 let perf = { frameMs: 16, fps: 60, bodies: 0, gravSources: 0, fieldLines: 0 };
+
+const QUALITY_NORMAL = {
+  trailLimit: 150,
+  particleLimit: 420,
+  engineParticleRate: 5,
+  visibleBodyLimit: 30,
+  bodyFieldPulseCount: 2,
+  lagrangeLimit: 10,
+  lagrangeFrameTtl: 8,
+  lagrangeMove: 150,
+  fieldSpacing: 78,
+  fieldSpacingSmall: 104,
+  fieldSourceLimit: 15,
+  fieldSourceLimitSmall: 11,
+  fieldMaxLines: 190,
+  fieldStepBias: 0,
+  fieldCacheFrames: 9,
+  fieldMovePx: 42,
+  fieldArrowStride: 3,
+  predictionSourceLimit: 18,
+  predictionSourceLimitSmall: 12,
+  predictionSourceExtra: 5200,
+  predictionDt: .062,
+  predictionBaseSteps: 96,
+  predictionMinSteps: 36,
+  predictionMaxSteps: 220,
+  predictionFrameTtl: 4,
+  predictionMove: 22,
+  predictionVelocity: 14
+};
+
+const QUALITY_LOW = {
+  trailLimit: 88,
+  particleLimit: 210,
+  engineParticleRate: 3.2,
+  visibleBodyLimit: 18,
+  bodyFieldPulseCount: 1,
+  lagrangeLimit: 7,
+  lagrangeFrameTtl: 14,
+  lagrangeMove: 220,
+  fieldSpacing: 158,
+  fieldSpacingSmall: 144,
+  fieldSourceLimit: 7,
+  fieldSourceLimitSmall: 7,
+  fieldMaxLines: 96,
+  fieldStepBias: -1,
+  fieldCacheFrames: 28,
+  fieldMovePx: 76,
+  fieldArrowStride: 4,
+  predictionSourceLimit: 8,
+  predictionSourceLimitSmall: 8,
+  predictionSourceExtra: 3400,
+  predictionDt: .082,
+  predictionBaseSteps: 42,
+  predictionMinSteps: 22,
+  predictionMaxSteps: 86,
+  predictionFrameTtl: 10,
+  predictionMove: 48,
+  predictionVelocity: 32
+};
+
+function renderQuality() {
+  return lowPower || W < 760 || H < 540 || DPR > 1.25 ? QUALITY_LOW : QUALITY_NORMAL;
+}
 
 const camera = { x: 0, y: 0, shake: 0, zoom: 1 };
 const pointer = { down: false, has: false, x: 0, y: 0, wx: 0, wy: 0, last: 0 };
