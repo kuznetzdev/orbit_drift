@@ -374,7 +374,9 @@ function scanBody(body, perfect, quality, relSpeed = 0, distance = 0) {
 
   player.driftCharge = Math.max(0, player.driftCharge - 3.0);
   if (body.target && objective) {
-    message = obj.ok ? `${objective.title}: выполнено` : `${objective.title}: частично выполнено`;
+    message = obj.ok
+      ? (objective.successText || `${objective.title}: выполнено`)
+      : (objective.partialText || `${objective.title}: частично выполнено`);
   } else {
     message = perfect ? 'Орбита стабилизирована' : `Скан завершён: ${labelOf(body)}`;
   }

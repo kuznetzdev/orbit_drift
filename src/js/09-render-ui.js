@@ -102,6 +102,21 @@ function objectiveMetaText(obj) {
   return `риск: ${obj.risk || 'обычный'} · награда: ${obj.reward || '+' + (obj.bonus || 0)}`;
 }
 
+function objectiveSuccessText(obj) {
+  if (!obj) return 'достигни цели';
+  if (obj.type === 'orbit') return 'успех: ровная дуга у цели';
+  if (obj.type === 'sling') return 'успех: близкий проход без тяги';
+  if (obj.type === 'skim') return 'успех: быстрый выход из жара';
+  if (obj.type === 'rendezvous') return 'успех: сближение и равная скорость';
+  if (obj.type === 'tide') return 'успех: близко без перегруза';
+  if (obj.type === 'silent') return 'успех: кольцо на инерции';
+  return 'успех: пролёт через кольцо';
+}
+
+function routeText() {
+  return routeOptions.length > 1 ? `маршрут ${routeChoice + 1}/${routeOptions.length}` : 'маршрут 1/1';
+}
+
 function drawScorePanel(x, y, compact) {
   const w = compact ? 176 : 228;
   const h = compact ? 88 : 104;
@@ -124,28 +139,36 @@ function drawScorePanel(x, y, compact) {
 
 function drawObjectivePanel(x, y, compact) {
   if (!objective || !target) return { x, y, w: 0, h: 0 };
-  const w = Math.min(compact ? W - x * 2 : 396, W - x * 2);
-  const h = compact ? 84 : 106;
-  drawSoftPanel(x, y, w, h, 16, .48);
+  const margin = uiMargin();
+  const shipW = compact ? 136 : 172;
+  const shipX = W - shipW - margin;
+  const maxByShip = shipX >= (compact ? 198 : 270) ? shipX - x - 10 : W - x * 2;
+  const w = Math.min(compact ? maxByShip : 420, W - x * 2);
+  const h = compact ? 104 : 126;
+  drawSoftPanel(x, y, w, h, 16, .56);
   ctx.textAlign = 'left';
   ctx.textBaseline = 'top';
   drawPill(objective.code, x + 14, y + 13, target.hue, true);
-  ctx.fillStyle = 'rgba(238,246,255,.86)';
+  ctx.fillStyle = 'rgba(244,249,255,.93)';
   ctx.font = compact ? '600 13px ui-sans-serif, system-ui' : '600 15px ui-sans-serif, system-ui';
   ctx.fillText(objective.title, x + 88, y + 14);
-  ctx.fillStyle = 'rgba(238,246,255,.46)';
-  ctx.font = '11px ui-sans-serif, system-ui';
-  drawWrappedText(objective.hint, x + 14, y + (compact ? 40 : 43), w - 28, compact ? 13 : 14, compact ? 1 : 2);
-  if (!compact) {
-    ctx.fillStyle = 'rgba(255,214,145,.54)';
-    ctx.font = '10px ui-sans-serif, system-ui';
-    ctx.fillText(objectiveMetaText(objective), x + 14, y + 65);
-  }
+
+  ctx.fillStyle = 'rgba(238,246,255,.72)';
+  ctx.font = compact ? '11px ui-sans-serif, system-ui' : '12px ui-sans-serif, system-ui';
+  drawWrappedText(`Действие: ${objective.hint}`, x + 14, y + (compact ? 40 : 43), w - 28, compact ? 13 : 15, 1);
+
+  ctx.fillStyle = 'rgba(170,228,255,.72)';
+  ctx.font = '10px ui-sans-serif, system-ui';
+  ctx.fillText(objectiveSuccessText(objective), x + 14, y + (compact ? 58 : 66));
+
+  ctx.fillStyle = 'rgba(255,214,145,.70)';
+  ctx.font = '10px ui-sans-serif, system-ui';
+  ctx.fillText(objectiveMetaText(objective), x + 14, y + (compact ? 74 : 83));
+
   const d = worldDistanceToTarget();
   ctx.fillStyle = `hsla(${target.hue}, 94%, 78%, .66)`;
   ctx.font = '10px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
-  const route = routeOptions.length > 1 ? ` · цель ${routeChoice + 1}/${routeOptions.length}` : '';
-  ctx.fillText(`${objectiveVerb(objective)} · ${labelOf(target)} · ${Math.round(d)} м${route}`, x + 14, y + h - 18);
+  ctx.fillText(`${routeText()} · ${labelOf(target)} · ${Math.round(d)} м · ${objectiveVerb(objective)}`, x + 14, y + h - 18);
   return { x, y, w, h };
 }
 
@@ -353,13 +376,13 @@ function hitRect(x, y, r) {
 function quickButtonRects() {
   if (state !== 'play') return [];
   const short = W < 560;
-  const w = short ? 38 : 58;
+  const w = short ? 36 : 58;
   const h = 28;
-  const gap = 8;
+  const gap = short ? 6 : 8;
   const y = H - h - (short ? 14 : 18);
   const labels = short
-    ? [ ['−', 'zoomOut'], ['+', 'zoomIn'], ['зв', 'sound'], ['нав', 'nav'], ['G', 'gravity'], ['ц', 'route'] ]
-    : [ ['−', 'zoomOut'], ['+', 'zoomIn'], [soundOn ? 'звук' : 'тихо', 'sound'], [navLayer ? 'нав' : 'нав-', 'nav'], [gravityLayer ? 'поле' : 'поле-', 'gravity'], ['цель', 'route'] ];
+    ? [ ['−', 'zoomOut'], ['+', 'zoomIn'], ['зв', 'sound'], ['нав', 'nav'], ['G', 'gravity'], ['ц', 'route'], ['меню', 'menu'] ]
+    : [ ['−', 'zoomOut'], ['+', 'zoomIn'], [soundOn ? 'звук' : 'тихо', 'sound'], [navLayer ? 'нав' : 'нав-', 'nav'], [gravityLayer ? 'поле' : 'поле-', 'gravity'], ['цель', 'route'], ['меню', 'menu'] ];
   const total = labels.length * w + (labels.length - 1) * gap;
   let x = W - total - (short ? 12 : 18);
   return labels.map(([label, action]) => {
@@ -420,14 +443,15 @@ function menuSoundRect() {
   const m = overlayMetrics(isMenu);
   const w = Math.min(isMenu ? 184 : 174, m.boxW - 48);
   const h = 34;
-  return { x: W / 2 - w / 2, y: m.y + m.boxH - (isMenu ? 88 : 88), w, h };
+  return { x: W / 2 - w / 2, y: m.y + m.boxH - (isMenu ? (W < 540 ? 128 : 120) : 88), w, h };
 }
 
 function menuStartRect() {
-  const m = overlayMetrics(state === 'menu');
+  const isMenu = state === 'menu';
+  const m = overlayMetrics(isMenu);
   const w = Math.min(230, m.boxW - 56);
   const h = 40;
-  return { x: W / 2 - w / 2, y: m.y + m.boxH - 48, w, h };
+  return { x: W / 2 - w / 2, y: m.y + m.boxH - (isMenu ? (W < 540 ? 82 : 74) : 48), w, h };
 }
 
 function handleUiTap(x, y) {
@@ -440,6 +464,10 @@ function handleUiTap(x, y) {
       else if (b.action === 'nav') { navLayer = !navLayer; writeSettings(); soundCue('select', null, 1); }
       else if (b.action === 'gravity') { gravityLayer = !gravityLayer; writeSettings(); soundCue('select', null, 2); }
       else if (b.action === 'route') cycleTarget();
+      else if (b.action === 'menu') {
+        if (typeof returnToDifficultyMenu === 'function') returnToDifficultyMenu();
+        else { setupWorld(true); soundCue('select', null, 3); }
+      }
       return true;
     }
     return false;
@@ -481,57 +509,57 @@ function drawOverlay(title, subtitle, action) {
   ctx.textBaseline = 'middle';
 
   const grd = ctx.createLinearGradient(x, y, x + boxW, y + boxH);
-  grd.addColorStop(0, 'rgba(7, 16, 34, .76)');
-  grd.addColorStop(1, 'rgba(1, 5, 15, .54)');
+  grd.addColorStop(0, menu ? 'rgba(8, 20, 42, .92)' : 'rgba(7, 16, 34, .80)');
+  grd.addColorStop(1, menu ? 'rgba(1, 6, 18, .86)' : 'rgba(1, 5, 15, .58)');
   ctx.fillStyle = grd;
   roundRect(x, y, boxW, boxH, 24);
   ctx.fill();
-  ctx.strokeStyle = 'rgba(148,218,255,.15)';
-  ctx.lineWidth = 1;
+  ctx.strokeStyle = menu ? 'rgba(158,229,255,.34)' : 'rgba(148,218,255,.15)';
+  ctx.lineWidth = menu ? 1.35 : 1;
   roundRect(x, y, boxW, boxH, 24);
   ctx.stroke();
 
-  ctx.fillStyle = 'rgba(244,249,255,.95)';
+  ctx.fillStyle = 'rgba(248,252,255,.98)';
   ctx.font = menu ? `${Math.round((narrow ? 28 : 34) * uiScale)}px ui-sans-serif, system-ui` : `${Math.round((narrow ? 26 : 32) * uiScale)}px ui-sans-serif, system-ui`;
   ctx.fillText(title, W / 2, y + (menu ? 42 : 44));
-  ctx.fillStyle = 'rgba(238,246,255,.64)';
+  ctx.fillStyle = menu ? 'rgba(238,246,255,.80)' : 'rgba(238,246,255,.64)';
   ctx.font = `${narrow ? 12 : 13}px ui-sans-serif, system-ui`;
   ctx.fillText(subtitle, W / 2, y + (menu ? 74 : 76));
 
   if (menu) {
-    ctx.fillStyle = 'rgba(169,222,255,.48)';
+    ctx.fillStyle = 'rgba(169,222,255,.72)';
     ctx.font = '10px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
     ctx.fillText('3 режима · сила поля / дальность / контроль', W / 2, y + 104);
 
     for (const r of menuDifficultyRects()) {
       const active = r.index === difficultyIndex;
       const d = r.d;
-      ctx.fillStyle = active ? 'rgba(16, 38, 72, .56)' : 'rgba(4, 14, 29, .31)';
+      ctx.fillStyle = active ? 'rgba(18, 48, 90, .78)' : 'rgba(6, 18, 38, .62)';
       roundRect(r.x, r.y, r.w, r.h, 15);
       ctx.fill();
-      ctx.strokeStyle = active ? 'rgba(139,230,255,.44)' : 'rgba(139,230,255,.12)';
-      ctx.lineWidth = active ? 1.25 : 1;
+      ctx.strokeStyle = active ? 'rgba(154,235,255,.72)' : 'rgba(139,230,255,.24)';
+      ctx.lineWidth = active ? 1.5 : 1;
       roundRect(r.x, r.y, r.w, r.h, 15);
       ctx.stroke();
 
       ctx.textAlign = narrow ? 'left' : 'center';
       const tx = narrow ? r.x + 14 : r.x + r.w / 2;
-      ctx.fillStyle = active ? 'rgba(238,248,255,.92)' : 'rgba(238,248,255,.68)';
+      ctx.fillStyle = active ? 'rgba(248,252,255,.98)' : 'rgba(238,248,255,.86)';
       ctx.font = '700 13px ui-sans-serif, system-ui';
       ctx.fillText(`${d.label || d.name}`, tx, r.y + (narrow ? 17 : 18));
-      ctx.fillStyle = active ? 'rgba(132,226,255,.78)' : 'rgba(132,226,255,.44)';
+      ctx.fillStyle = active ? 'rgba(158,235,255,.92)' : 'rgba(132,226,255,.68)';
       ctx.font = '10px ui-sans-serif, system-ui';
       ctx.fillText(d.title, tx, r.y + (narrow ? 34 : 38));
       if (!narrow) {
-        ctx.fillStyle = 'rgba(238,246,255,.34)';
+        ctx.fillStyle = 'rgba(238,246,255,.54)';
         ctx.font = '9px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
         ctx.fillText(`поле ${fmtNum(d.gravity, 2)} · дальн. ${fmtNum(d.targetMax, 2)}`, tx, r.y + r.h - 15);
-        ctx.fillStyle = 'rgba(255,214,145,.38)';
+        ctx.fillStyle = 'rgba(255,214,145,.68)';
         ctx.font = '9px ui-sans-serif, system-ui';
         ctx.fillText(`${d.riskText} · ${d.rewardText}`, tx, r.y + r.h - 30);
       } else {
         ctx.textAlign = 'right';
-        ctx.fillStyle = 'rgba(238,246,255,.34)';
+        ctx.fillStyle = 'rgba(238,246,255,.58)';
         ctx.font = '9px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
         ctx.fillText(`${d.name}`, r.x + r.w - 14, r.y + 17);
       }
@@ -539,31 +567,32 @@ function drawOverlay(title, subtitle, action) {
 
     ctx.textAlign = 'center';
     const sr = menuSoundRect();
-    ctx.fillStyle = soundOn ? 'rgba(8, 26, 44, .50)' : 'rgba(8, 12, 22, .34)';
+    ctx.fillStyle = soundOn ? 'rgba(8, 30, 52, .70)' : 'rgba(8, 12, 22, .58)';
     roundRect(sr.x, sr.y, sr.w, sr.h, 17);
     ctx.fill();
-    ctx.strokeStyle = soundOn ? 'rgba(132,226,255,.25)' : 'rgba(132,226,255,.10)';
+    ctx.strokeStyle = soundOn ? 'rgba(132,226,255,.44)' : 'rgba(132,226,255,.18)';
     roundRect(sr.x, sr.y, sr.w, sr.h, 17);
     ctx.stroke();
-    ctx.fillStyle = soundOn ? 'rgba(232,248,255,.82)' : 'rgba(232,248,255,.38)';
+    ctx.fillStyle = soundOn ? 'rgba(232,248,255,.92)' : 'rgba(232,248,255,.54)';
     ctx.font = '11px ui-sans-serif, system-ui';
     ctx.fillText(soundOn ? 'Звук включён' : 'Звук выключен', sr.x + sr.w / 2, sr.y + sr.h / 2 + .5);
 
     const st = menuStartRect();
-    ctx.fillStyle = 'rgba(132,226,255,.10)';
+    ctx.fillStyle = 'rgba(132,226,255,.18)';
     roundRect(st.x, st.y, st.w, st.h, 18);
     ctx.fill();
-    ctx.strokeStyle = 'rgba(132,226,255,.34)';
+    ctx.strokeStyle = 'rgba(132,226,255,.58)';
     roundRect(st.x, st.y, st.w, st.h, 18);
     ctx.stroke();
-    ctx.fillStyle = 'rgba(132,226,255,.92)';
+    ctx.fillStyle = 'rgba(186,242,255,.98)';
     ctx.font = '700 13px ui-sans-serif, system-ui';
     ctx.fillText(action, st.x + st.w / 2, st.y + st.h / 2 + .5);
 
-    ctx.fillStyle = 'rgba(238,246,255,.34)';
+    ctx.fillStyle = 'rgba(238,246,255,.56)';
     ctx.font = '10px ui-sans-serif, system-ui';
     const controls = narrow ? 'удерживай экран: двигатель · двумя пальцами меняй масштаб' : 'удерживай мышь или экран: двигатель · отпусти: полёт по инерции · R смена цели · G поле гравитации · N навигация';
-    ctx.fillText(controls, W / 2, y + boxH - 12);
+    ctx.textAlign = 'left';
+    drawWrappedText(controls, x + 24, y + boxH - (narrow ? 28 : 24), boxW - 48, 12, 1);
   } else {
     const summaryY = y + 108;
     ctx.fillStyle = 'rgba(238,246,255,.88)';

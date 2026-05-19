@@ -33,12 +33,24 @@ function worldDistanceToTarget() {
   return hypot(target.x - player.x, target.y - player.y);
 }
 
+function handleQuickMenuTap(x, y) {
+  if (state !== 'play' || typeof quickButtonRects !== 'function') return false;
+  for (const b of quickButtonRects()) {
+    if (b.action === 'menu' && hitRect(x, y, b)) return returnToDifficultyMenu();
+  }
+  return false;
+}
+
 function onPointerDown(x, y) {
   pointer.down = true;
   pointer.has = true;
   pointer.x = x;
   pointer.y = y;
   pointer.last = performance.now();
+  if (handleQuickMenuTap(x, y)) {
+    pointer.down = false;
+    return;
+  }
   const before = state;
   if (handleUiTap(x, y)) {
     if (before === 'play' || state !== 'play') pointer.down = false;
@@ -117,9 +129,10 @@ canvas.addEventListener('touchend', e => {
 }, { passive: false });
 
 window.addEventListener('keydown', e => {
-  const codes = ['Space', 'KeyW', 'KeyA', 'KeyS', 'KeyD', 'KeyR', 'KeyG', 'KeyN', 'KeyM', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Digit1', 'Digit2', 'Digit3', 'Minus', 'Equal', 'NumpadSubtract', 'NumpadAdd'];
+  const codes = ['Escape', 'Space', 'KeyW', 'KeyA', 'KeyS', 'KeyD', 'KeyR', 'KeyG', 'KeyN', 'KeyM', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Digit1', 'Digit2', 'Digit3', 'Minus', 'Equal', 'NumpadSubtract', 'NumpadAdd'];
   if (codes.includes(e.code)) e.preventDefault();
 
+  if (e.code === 'Escape' && !keys[e.code] && returnToDifficultyMenu()) return;
   if ((state === 'menu' || state === 'dead') && /^Digit[1-3]$/.test(e.code) && !keys[e.code]) {
     setDifficultyIndex(Number(e.code.slice(-1)) - 1);
     if (state === 'menu') setupWorld(true);

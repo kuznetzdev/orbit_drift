@@ -101,6 +101,31 @@ function startGame() {
   soundCue('start');
 }
 
+function clearGameplayInput() {
+  pointer.down = false;
+  pointer.has = false;
+  pointer.last = 0;
+  touchZoom.active = false;
+  touchZoom.dist = 0;
+  for (const code of Object.keys(keys)) keys[code] = false;
+  if (player) {
+    player.thrusting = false;
+    player.brake = false;
+  }
+  setEngineAudio(false, 0);
+}
+
+function returnToDifficultyMenu() {
+  if (state !== 'play' && state !== 'dead') return false;
+  clearGameplayInput();
+  setupWorld(true);
+  clearGameplayInput();
+  message = 'Выбор сложности';
+  messageTime = 1.2;
+  soundCue('select', null, 0);
+  return true;
+}
+
 function endGame(reason) {
   if (state !== 'play') return;
   state = 'dead';
@@ -200,8 +225,8 @@ function setTarget(body, announce = true) {
   if (target) {
     target.target = true;
     if (announce) {
-      message = `${objective.title}: ${labelOf(target)} · ${objective.reward}`;
-      messageTime = 1.35;
+      message = `${objective.title}: ${objective.condition}`;
+      messageTime = 1.65;
     }
   }
 }
@@ -236,13 +261,13 @@ function buildObjective(body) {
     else type = roll < .48 ? 'orbit' : 'survey';
   }
   const defs = {
-    survey:     { code: 'SCAN',   title: 'Скан цели',       hint: 'пролети через тонкое кольцо', bonus: 2, risk: 'низкий', reward: '+скан и топливо' },
-    orbit:      { code: 'ORBIT',  title: 'Выйди на орбиту', hint: 'держи корабль на ровной дуге', bonus: 5, risk: 'средний', reward: '+точность' },
-    sling:      { code: 'SLING',  title: 'Гравитационный разгон', hint: 'пройди рядом без тяги и выйди быстрее', bonus: 6, risk: 'средний', reward: '+скорость' },
-    skim:       { code: 'SKIM',   title: 'Пролёт у звезды',       hint: 'зайди в зону излучения и быстро уходи', bonus: 7, risk: 'нагрев', reward: '+риск' },
-    rendezvous: { code: 'COMET',  title: 'Догнать комету',    hint: 'сблизься с ней и выровняй скорость', bonus: 7, risk: 'скорость', reward: '+комета' },
-    tide:       { code: 'TIDE',   title: 'Опасное сближение',      hint: 'подойди близко, но не превысь нагрузку', bonus: 9, risk: 'нагрузка', reward: '+опасность' },
-    silent:     { code: 'QUIET',  title: 'Скан без тяги',           hint: 'пролети кольцо на инерции', bonus: 4, risk: 'контроль', reward: '+инерция' }
+    survey:     { code: 'SCAN',   title: 'Скан цели', condition: 'пройди через кольцо сканирования', successText: 'Скан цели выполнен', partialText: 'Скан засчитан частично', hint: 'пролети через тонкое кольцо', bonus: 2, risk: 'низкий', reward: '+скан и топливо' },
+    orbit:      { code: 'ORBIT',  title: 'Выйди на орбиту', condition: 'пройди кольцо ровной дугой', successText: 'Орбита засчитана', partialText: 'Орбита нестабильна, часть очков сохранена', hint: 'держи корабль на ровной дуге', bonus: 5, risk: 'средний', reward: '+точность' },
+    sling:      { code: 'SLING',  title: 'Гравитационный разгон', condition: 'пролети рядом без тяги и набери скорость', successText: 'Разгон выполнен', partialText: 'Разгон не набран', hint: 'пройди рядом без тяги и выйди быстрее', bonus: 6, risk: 'средний', reward: '+скорость' },
+    skim:       { code: 'SKIM',   title: 'Пролёт у звезды', condition: 'коснись зоны излучения и уйди без перегрева', successText: 'Опасный пролёт выполнен', partialText: 'Пролёт засчитан частично', hint: 'зайди в зону излучения и быстро уходи', bonus: 7, risk: 'нагрев', reward: '+риск' },
+    rendezvous: { code: 'COMET',  title: 'Догнать комету', condition: 'сблизься с кометой на близкой скорости', successText: 'Сближение с кометой выполнено', partialText: 'Комета просканирована, скорость не выровнена', hint: 'сблизься с ней и выровняй скорость', bonus: 7, risk: 'скорость', reward: '+комета' },
+    tide:       { code: 'TIDE',   title: 'Опасное сближение', condition: 'подойди близко и удержи нагрузку', successText: 'Опасное сближение выдержано', partialText: 'Сближение засчитано частично', hint: 'подойди близко, но не превысь нагрузку', bonus: 9, risk: 'нагрузка', reward: '+опасность' },
+    silent:     { code: 'QUIET',  title: 'Скан без тяги', condition: 'пройди кольцо на инерции без тяги', successText: 'Скан без тяги выполнен', partialText: 'Скан засчитан, но тяга мешала', hint: 'пролети кольцо на инерции', bonus: 4, risk: 'контроль', reward: '+инерция' }
   };
   return { type, ...(defs[type] || defs.survey), bodyId: body.id, started: time };
 }
@@ -290,7 +315,7 @@ function completeSlingObjective(body, points) {
   player.stress = Math.max(0, (player.stress || 0) - .05 * difficulty.rewardStressReliefMul);
   texts.push({ x: body.x, y: body.y - body.r - 42, text: `разгон +${gained}`, hue: body.hue, life: 1.45, max: 1.45 });
   burst(player.x, player.y, 66, body.hue, .85);
-  message = 'Гравитационный манёвр выполнен';
+  message = objective.successText || 'Разгон выполнен';
   messageTime = 1.1;
   chooseTarget();
   return true;
