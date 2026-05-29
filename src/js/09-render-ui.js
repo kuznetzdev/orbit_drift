@@ -6,6 +6,15 @@
 
 'use strict';
 
+const uiSkin = {
+  panelFill: 'rgba(8, 17, 32, 0.58)',
+  panelFillStrong: 'rgba(8, 16, 30, 0.76)',
+  panelStroke: 'rgba(167, 219, 255, 0.26)',
+  panelSoftStroke: 'rgba(167, 219, 255, 0.08)',
+  textDim: 'rgba(236, 245, 255, 0.48)',
+  textNormal: 'rgba(234, 244, 255, 0.86)'
+};
+
 function uiMargin() {
   return W < 520 ? 12 : 22;
 }
@@ -57,18 +66,15 @@ function uiSafeArea() {
 
 function drawSoftPanel(x, y, w, h, radius = 16, alpha = .58) {
   ctx.save();
-  const grd = ctx.createLinearGradient(x, y, x + w, y + h);
-  grd.addColorStop(0, `rgba(9, 24, 49, ${alpha})`);
-  grd.addColorStop(.62, `rgba(4, 13, 31, ${Math.max(.30, alpha - .12)})`);
-  grd.addColorStop(1, `rgba(1, 5, 15, ${Math.max(.24, alpha - .20)})`);
-  ctx.fillStyle = grd;
+  const fill = alpha < .45 ? uiSkin.panelFill : uiSkin.panelFillStrong;
+  ctx.fillStyle = fill;
   roundRect(x, y, w, h, radius);
   ctx.fill();
-  ctx.strokeStyle = 'rgba(151,229,255,.18)';
+  ctx.strokeStyle = uiSkin.panelStroke;
   ctx.lineWidth = 1;
   roundRect(x, y, w, h, radius);
   ctx.stroke();
-  ctx.strokeStyle = 'rgba(255,255,255,.055)';
+  ctx.strokeStyle = uiSkin.panelSoftStroke;
   ctx.beginPath();
   ctx.moveTo(x + radius, y + 1);
   ctx.lineTo(x + w - radius, y + 1);
@@ -91,13 +97,13 @@ function drawPill(text, x, y, hue = 205, active = true) {
   ctx.font = '700 10px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
   const w = ctx.measureText(text).width + pad * 2;
   const h = 20;
-  ctx.fillStyle = active ? `hsla(${hue}, 70%, 42%, .22)` : 'rgba(238,246,255,.06)';
+  ctx.fillStyle = active ? `hsla(${hue}, 75%, 48%, .22)` : 'rgba(236,245,255,.06)';
   roundRect(x, y, w, h, 10);
   ctx.fill();
-  ctx.strokeStyle = active ? `hsla(${hue}, 92%, 74%, .36)` : 'rgba(238,246,255,.13)';
+  ctx.strokeStyle = active ? `hsla(${hue}, 95%, 74%, .35)` : 'rgba(236,245,255,.16)';
   roundRect(x, y, w, h, 10);
   ctx.stroke();
-  ctx.fillStyle = active ? `hsla(${hue}, 92%, 84%, .88)` : 'rgba(238,246,255,.42)';
+  ctx.fillStyle = active ? `hsla(${hue}, 92%, 84%, .88)` : 'rgba(236,245,255,.42)';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   ctx.fillText(text, x + w / 2, y + h / 2 + .5);
@@ -541,7 +547,7 @@ function drawQuickButtons() {
   ctx.save();
   const first = buttons[0];
   const last = buttons[buttons.length - 1];
-  drawSoftPanel(first.x - 6, first.y - 6, last.x + last.w - first.x + 12, first.h + 12, 17, .40);
+  drawSoftPanel(first.x - 2, first.y - 2, last.x + last.w - first.x + 4, first.h + 4, 14, .34);
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   for (const b of buttons) {
@@ -549,19 +555,14 @@ function drawQuickButtons() {
     const primary = b.action === 'zoomIn' || b.action === 'zoomOut' || b.action === 'route';
     const hue = b.action === 'gravity' ? 210 : (b.action === 'route' ? 48 : 196);
     ctx.fillStyle = active
-      ? (primary ? `hsla(${hue},72%,44%,.18)` : 'rgba(9,24,45,.58)')
-      : 'rgba(7,13,24,.42)';
+      ? (primary ? `hsla(${hue},72%,45%,.20)` : 'rgba(11, 26, 44, .58)')
+      : 'rgba(10, 17, 30, .40)';
     roundRect(b.x, b.y, b.w, b.h, 12);
     ctx.fill();
-    ctx.strokeStyle = active ? `hsla(${hue},92%,74%,.34)` : 'rgba(148,226,255,.12)';
+    ctx.strokeStyle = active ? `hsla(${hue},92%,74%,.34)` : 'rgba(148,226,255,.10)';
     ctx.lineWidth = 1;
     roundRect(b.x, b.y, b.w, b.h, 12);
     ctx.stroke();
-    if (active && (b.action === 'sound' || b.action === 'nav' || b.action === 'gravity')) {
-      ctx.fillStyle = `hsla(${hue},94%,72%,.76)`;
-      roundRect(b.x + 8, b.y + b.h - 5, b.w - 16, 2, 1);
-      ctx.fill();
-    }
     ctx.fillStyle = active ? 'rgba(232,248,255,.88)' : 'rgba(224,244,255,.42)';
     ctx.font = '700 10px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
     ctx.fillText(fitText(b.label, b.w - 8), b.x + b.w / 2, b.y + b.h / 2 + .5);
@@ -687,17 +688,18 @@ function handleUiTap(x, y) {
 
 function drawOverlayButton(r, label, primary = false, active = true) {
   const hue = primary ? 190 : 205;
-  const grd = ctx.createLinearGradient(r.x, r.y, r.x, r.y + r.h);
-  grd.addColorStop(0, primary ? 'rgba(91, 224, 255, .24)' : (active ? 'rgba(22, 54, 86, .60)' : 'rgba(9, 14, 24, .58)'));
-  grd.addColorStop(1, primary ? 'rgba(24, 116, 164, .20)' : (active ? 'rgba(8, 22, 40, .52)' : 'rgba(5, 8, 16, .44)'));
-  ctx.fillStyle = grd;
+  ctx.fillStyle = primary
+    ? (active ? 'rgba(28, 78, 114, 0.56)' : 'rgba(28, 78, 114, 0.32)')
+    : (active ? 'rgba(13, 27, 46, 0.62)' : 'rgba(13, 27, 46, 0.36)');
   roundRect(r.x, r.y, r.w, r.h, Math.min(18, r.h / 2));
   ctx.fill();
-  ctx.strokeStyle = primary ? 'rgba(151,235,255,.64)' : (active ? 'rgba(132,226,255,.34)' : 'rgba(132,226,255,.14)');
+  ctx.strokeStyle = primary
+    ? 'rgba(151,235,255,.56)'
+    : (active ? 'rgba(132,226,255,.24)' : 'rgba(132,226,255,.12)');
   ctx.lineWidth = primary ? 1.35 : 1;
   roundRect(r.x, r.y, r.w, r.h, Math.min(18, r.h / 2));
   ctx.stroke();
-  ctx.fillStyle = primary ? `hsla(${hue}, 96%, 88%, .98)` : (active ? 'rgba(232,248,255,.88)' : 'rgba(232,248,255,.46)');
+  ctx.fillStyle = primary ? `hsla(${hue}, 96%, 88%, .98)` : (active ? 'rgba(232,248,255,.84)' : 'rgba(232,248,255,.38)');
   ctx.font = primary ? '800 13px ui-sans-serif, system-ui' : '700 11px ui-sans-serif, system-ui';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
@@ -742,21 +744,12 @@ function drawOverlay(title, subtitle, action) {
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
 
-  const grd = ctx.createLinearGradient(x, y, x + boxW, y + boxH);
-  grd.addColorStop(0, menu ? 'rgba(11, 28, 56, .94)' : 'rgba(18, 20, 35, .88)');
-  grd.addColorStop(.58, menu ? 'rgba(4, 14, 32, .90)' : 'rgba(9, 13, 27, .80)');
-  grd.addColorStop(1, menu ? 'rgba(1, 5, 15, .88)' : 'rgba(4, 6, 15, .72)');
-  ctx.fillStyle = grd;
+  ctx.fillStyle = menu ? 'rgba(9, 18, 32, 0.86)' : 'rgba(7, 15, 28, 0.76)';
   roundRect(x, y, boxW, boxH, 22);
   ctx.fill();
-  ctx.strokeStyle = menu ? 'rgba(158,229,255,.42)' : 'rgba(255,128,128,.22)';
-  ctx.lineWidth = 1.25;
+  ctx.strokeStyle = menu ? 'rgba(158,229,255,.36)' : 'rgba(255,128,128,.16)';
+  ctx.lineWidth = menu ? 1.2 : 1;
   roundRect(x, y, boxW, boxH, 22);
-  ctx.stroke();
-  ctx.strokeStyle = 'rgba(255,255,255,.055)';
-  ctx.beginPath();
-  ctx.moveTo(x + 22, y + 1);
-  ctx.lineTo(x + boxW - 22, y + 1);
   ctx.stroke();
 
   ctx.fillStyle = 'rgba(248,252,255,.98)';
