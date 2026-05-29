@@ -6,6 +6,7 @@
   <meta name="theme-color" content="#01040b" />
   <meta name="description" content="Orbit Drift — минималистичная 2D-игра про космический дрейф, видимую гравитацию и навигацию между звёздами." />
   <title>Orbit Drift</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%2301040b'/%3E%3Ccircle cx='32' cy='32' r='8' fill='%2395e4ff'/%3E%3Cpath d='M8 34c15-16 34-21 48-12C43 19 23 26 8 34Z' fill='none' stroke='%23ffd079' stroke-width='4' stroke-linecap='round'/%3E%3C/svg%3E" />
   <style>
 /*
  * Orbit Drift — visual layer
@@ -72,6 +73,10 @@ canvas {
 }
 
 @media (max-width: 560px) {
+  .hint { display: none; }
+}
+
+@media (max-height: 360px), (max-width: 640px) and (max-height: 480px) {
   .hint { display: none; }
 }
 
@@ -494,21 +499,82 @@ function screenToWorld(x, y) {
 
 'use strict';
 
-function ensureAudio() {
-  if (!soundOn) return;
-  try {
-    if (!audioCtx) {
-      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-      masterGain = audioCtx.createGain();
-      masterGain.gain.value = .72;
-      masterGain.connect(audioCtx.destination);
+let audioUnlocking = false;
+let audioError = null;
+let audioReadyPromise = null;
+let lastAudioWarnAt = -Infinity;
+
+function warnAudio(message, error = null) {
+  const now = typeof performance !== 'undefined' && typeof performance.now === 'function' ? performance.now() : Date.now();
+  if (now - lastAudioWarnAt < 4500) return;
+  lastAudioWarnAt = now;
+  if (error) console.warn(message, error);
+  else console.warn(message);
+}
+
+async function ensureAudio() {
+  if (!soundOn) return false;
+  if (audioReady && audioCtx && audioCtx.state !== 'suspended') return true;
+  if (audioReadyPromise) return audioReadyPromise;
+
+  audioUnlocking = true;
+  const unlockPromise = (async () => {
+    try {
+      const AudioCtor = window.AudioContext || window.webkitAudioContext;
+      if (!AudioCtor) throw new Error('Web Audio API is unavailable');
+      if (!audioCtx) {
+        audioCtx = new AudioCtor();
+        masterGain = audioCtx.createGain();
+        masterGain.gain.value = .72;
+        masterGain.connect(audioCtx.destination);
+      }
+      if (audioCtx.state === 'suspended') await audioCtx.resume();
+      audioReady = audioCtx.state !== 'suspended';
+      audioError = audioReady ? null : new Error(`AudioContext state: ${audioCtx.state}`);
+      if (audioReady) ensureEngineSound();
+      else warnAudio('Audio is not ready yet.', audioError);
+      return audioReady;
+    } catch (error) {
+      audioReady = false;
+      audioError = error;
+      warnAudio('Audio initialization failed; continuing without sound.', error);
+      return false;
+    } finally {
+      audioUnlocking = false;
     }
-    if (audioCtx.state === 'suspended') audioCtx.resume();
-    audioReady = true;
-    ensureEngineSound();
-  } catch (_) {
-    audioReady = false;
-  }
+  })();
+  audioReadyPromise = unlockPromise;
+  unlockPromise.finally(() => {
+    if (audioReadyPromise === unlockPromise) audioReadyPromise = null;
+  });
+
+  return unlockPromise;
+}
+
+function prepareSoundCue(name, body = null, amount = 1) {
+  if (!soundOn) return null;
+  const hueShift = body && body.hue ? clamp((body.hue - 180) / 600, -.18, .22) : 0;
+  const shifted = freqs => freqs.map(freq => freq * (1 + hueShift));
+  return { name, hueShift, shifted, amount };
+}
+
+function playPreparedSoundCue(cue) {
+  if (!cue || !soundOn || !audioReady || !audioCtx) return;
+  const { name, shifted, amount } = cue;
+  if (name === 'start') chord([196, 294, 392], .12, .034);
+  else if (name === 'scan') chord(shifted([420, 630, 945]), .10, .038);
+  else if (name === 'perfect') chord(shifted([528, 792, 1188]), .16, .045);
+  else if (name === 'assist') { tone(360 + amount * 18, .075, 'sine', .034); tone(520 + amount * 26, .10, 'sine', .032, .06); }
+  else if (name === 'flow') { tone(300 + amount * 55, .075, 'sine', .024); tone(450 + amount * 62, .11, 'triangle', .018, .045); }
+  else if (name === 'node') chord([720, 960, 1440], .10, .034);
+  else if (name === 'route') tone(360 + amount * 90, .06, 'sine', .026);
+  else if (name === 'fail') { tone(82, .22, 'sawtooth', .04); tone(51, .32, 'triangle', .03, .07); noise(.18, .022, 320); }
+  else if (name === 'warn') tone(148, .065, 'triangle', .026);
+  else if (name === 'heat') { noise(.11, .020 + amount * .006, 1800); tone(210 + amount * 24, .055, 'sawtooth', .020); }
+  else if (name === 'stress') { tone(188 - amount * 12, .09, 'triangle', .024); tone(264 + amount * 34, .08, 'sine', .018, .04); }
+  else if (name === 'critical') { tone(96, .12, 'sawtooth', .040); tone(72, .16, 'triangle', .034, .08); noise(.20, .028, 520); }
+  else if (name === 'impact') { noise(.16, .042, 240); tone(58, .24, 'triangle', .034); }
+  else if (name === 'select') tone(560 + amount * 80, .05, 'sine', .024);
 }
 
 function ensureEngineSound() {
@@ -579,8 +645,10 @@ function setEngineAudio(active, intensity = 0) {
 function toggleSound() {
   soundOn = !soundOn;
   if (soundOn) {
-    ensureAudio();
-    chord([440, 660, 990], .09, .035);
+    const cue = prepareSoundCue('select', null, 2);
+    ensureAudio().then(ok => {
+      if (ok) playPreparedSoundCue(cue);
+    });
   } else if (engineGain && audioCtx) {
     engineGain.gain.setTargetAtTime(.0001, audioCtx.currentTime, .05);
   }
@@ -588,19 +656,11 @@ function toggleSound() {
 }
 
 function soundCue(name, body = null, amount = 1) {
-  if (!soundOn) return;
-  ensureAudio();
-  const hueShift = body && body.hue ? clamp((body.hue - 180) / 600, -.18, .22) : 0;
-  if (name === 'start') chord([196, 294, 392], .12, .034);
-  else if (name === 'scan') chord([420, 630, 945].map(f => f * (1 + hueShift)), .10, .038);
-  else if (name === 'perfect') chord([528, 792, 1188].map(f => f * (1 + hueShift)), .16, .045);
-  else if (name === 'assist') { tone(360 + amount * 18, .075, 'sine', .034); tone(520 + amount * 26, .10, 'sine', .032, .06); }
-  else if (name === 'flow') { tone(300 + amount * 55, .075, 'sine', .024); tone(450 + amount * 62, .11, 'triangle', .018, .045); }
-  else if (name === 'node') chord([720, 960, 1440], .10, .034);
-  else if (name === 'route') tone(360 + amount * 90, .06, 'sine', .026);
-  else if (name === 'fail') { tone(82, .22, 'sawtooth', .04); tone(51, .32, 'triangle', .03, .07); noise(.18, .022, 320); }
-  else if (name === 'warn') tone(148, .065, 'triangle', .026);
-  else if (name === 'select') tone(560 + amount * 80, .05, 'sine', .024);
+  const cue = prepareSoundCue(name, body, amount);
+  if (!cue) return;
+  ensureAudio().then(ok => {
+    if (ok) playPreparedSoundCue(cue);
+  });
 }
 
 
@@ -613,11 +673,63 @@ function soundCue(name, body = null, amount = 1) {
 
 'use strict';
 
+const STARTUP_CLEAR_RADIUS = 1500;
+const STARTUP_HAZARD_PADDING = 360;
+
 function orbitSpeedAround(parentMu, orbitA, rng, minMul = .96, maxMul = 1.04) {
   if (!parentMu || !orbitA) return 0;
   const base = Math.sqrt(parentMu / Math.max(orbitA * orbitA * orbitA, 1));
   const dir = rng() < .5 ? -1 : 1;
   return base * rnd(rng, minMul, maxMul) * dir;
+}
+
+function orbitKeplerFactor(body, angle = body.orbitAngle || 0) {
+  const e = clamp(body.orbitE || 0, 0, .92);
+  if (e <= .01) return 1;
+  const denom = Math.max(1e-4, 1 - e * e);
+  return Math.pow(1 + e * Math.cos(angle), 2) / Math.pow(denom, 1.5);
+}
+
+function orbitalStateAt(parent, body, angle = body.orbitAngle || 0) {
+  const a = body.orbitA || body.orbitR || 0;
+  if (!parent || !a) return { x: body.x || 0, y: body.y || 0, vx: body.vx || 0, vy: body.vy || 0 };
+
+  const e = clamp(body.orbitE || 0, 0, .92);
+  const p = Math.max(1, a * (1 - e * e));
+  const cosNu = Math.cos(angle);
+  const sinNu = Math.sin(angle);
+  const rr = e > .01 ? p / Math.max(.08, 1 + e * cosNu) : a;
+  const arg = body.orbitArg || 0;
+  const cosArg = Math.cos(arg);
+  const sinArg = Math.sin(arg);
+  const localX = rr * cosNu;
+  const localY = rr * sinNu;
+
+  const rate = (body.orbitSpeed || 0) * orbitKeplerFactor(body, angle);
+  const drDnu = e > .01 ? (p * e * sinNu) / Math.max(.0064, Math.pow(1 + e * cosNu, 2)) : 0;
+  const dxDnu = drDnu * cosNu - rr * sinNu;
+  const dyDnu = drDnu * sinNu + rr * cosNu;
+
+  return {
+    x: parent.x + cosArg * localX - sinArg * localY,
+    y: parent.y + sinArg * localX + cosArg * localY,
+    vx: (parent.vx || 0) + (cosArg * dxDnu - sinArg * dyDnu) * rate,
+    vy: (parent.vy || 0) + (sinArg * dxDnu + cosArg * dyDnu) * rate
+  };
+}
+
+function applyOrbitalState(body, parent, angle = body.orbitAngle || 0) {
+  const state = orbitalStateAt(parent, body, angle);
+  body.x = state.x;
+  body.y = state.y;
+  body.vx = state.vx;
+  body.vy = state.vy;
+  return body;
+}
+
+function advanceOrbitalState(body, parent, dt) {
+  if (dt > 0) body.orbitAngle += (body.orbitSpeed || 0) * orbitKeplerFactor(body) * dt;
+  return applyOrbitalState(body, parent);
 }
 
 function localEccentricityCap(orbitA, innerOrbit, outerOrbit, hardCap = .16) {
@@ -817,6 +929,7 @@ function addCompanionStar(parent, profile, orbitR, angle, rng) {
   comp.orbitArg = rng() * TAU;
   comp.orbitAngle = angle;
   comp.orbitSpeed = orbitSpeedAround(parent.mu + comp.mu, orbitR, rng, .965, 1.035);
+  applyOrbitalState(comp, parent);
   comp.label = (comp.label || comp.class || 'ST') + '·B';
   comp.scan *= .88;
   comp.field = Math.min(comp.field, Math.max(2600, orbitR * 3.25));
@@ -894,6 +1007,7 @@ function addPlanet(parent, orbitR, angle, rng, home = false, orbitTuning = null)
     gravitates: true,
     densityCode: mass / Math.max(radius * radius * radius, 1)
   };
+  if (parent) applyOrbitalState(body, parent);
   bodies.push(body);
   return body;
 }
@@ -935,6 +1049,7 @@ function addAsteroid(parent, orbitR, angle, rng) {
     scanCooldown: 0,
     gravitates: true
   };
+  if (parent) applyOrbitalState(body, parent);
   bodies.push(body);
   return body;
 }
@@ -974,6 +1089,7 @@ function addComet(parent, orbitA, angle, rng) {
     scanCooldown: 0,
     gravitates: true
   };
+  if (parent) applyOrbitalState(body, parent);
   bodies.push(body);
   return body;
 }
@@ -1072,6 +1188,8 @@ function ensureChunk(cx, cy) {
       rogue.reward += 1;
     }
   }
+
+  if (player) cleanupStartupArea(player.x, player.y, STARTUP_CLEAR_RADIUS);
 }
 
 function ensureChunksAround(x, y, range = 3) {
@@ -1080,6 +1198,22 @@ function ensureChunksAround(x, y, range = 3) {
   for (let ix = cx - range; ix <= cx + range; ix++) {
     for (let iy = cy - range; iy <= cy + range; iy++) ensureChunk(ix, iy);
   }
+}
+
+function cleanupStartupArea(x, y, minRadius = 900, includeHazards = false) {
+  let write = 0;
+  for (let read = 0; read < bodies.length; read++) {
+    const b = bodies[read];
+    const clearRadius = includeHazards && b.kind === 'star'
+      ? Math.max(minRadius, (b.heatRadius || 0) + minRadius)
+      : minRadius;
+    const keep = b.home
+      || b.target
+      || b.id === (target && target.id)
+      || hypot(b.x - x, b.y - y) >= clearRadius;
+    if (keep) bodies[write++] = b;
+  }
+  bodies.length = write;
 }
 
 function cleanupFarBodies() {
@@ -1154,21 +1288,28 @@ function setupWorld(preview = false) {
   homePlanet.hue = 208;
   homePlanet.r = 32;
   homePlanet.scan = 146;
-  homePlanet.orbitSpeed = Math.sqrt(homeStar.mu / Math.max(homePlanet.orbitA * homePlanet.orbitA * homePlanet.orbitA, 1)) * .92;
-  homePlanet.vx = -Math.sin(homePlanet.orbitAngle) * homePlanet.orbitA * homePlanet.orbitSpeed;
-  homePlanet.vy =  Math.cos(homePlanet.orbitAngle) * homePlanet.orbitA * homePlanet.orbitSpeed;
+  const homeOrbitDir = homePlanet.orbitSpeed < 0 ? -1 : 1;
+  homePlanet.orbitSpeed = Math.sqrt(homeStar.mu / Math.max(homePlanet.orbitA * homePlanet.orbitA * homePlanet.orbitA, 1)) * .92 * homeOrbitDir;
+  applyOrbitalState(homePlanet, homeStar);
 
-  const spawnDx = -88;
-  const spawnDy = -128;
-  const spawnR = Math.hypot(spawnDx, spawnDy);
-  const spawnTangent = Math.atan2(spawnDy, spawnDx) + Math.PI / 2;
-  const spawnSpeed = Math.sqrt((homePlanet.mu * difficulty.gravity) / Math.max(spawnR, 1)) * .86;
+  const homeDx = homePlanet.x - homeStar.x;
+  const homeDy = homePlanet.y - homeStar.y;
+  const homeInvR = 1 / Math.max(Math.hypot(homeDx, homeDy), 1);
+  const spawnRadialX = homeDx * homeInvR;
+  const spawnRadialY = homeDy * homeInvR;
+  const spawnTangentX = -spawnRadialY * homeOrbitDir;
+  const spawnTangentY = spawnRadialX * homeOrbitDir;
+  const spawnR = Math.max(900, homeStar.heatRadius - Math.hypot(homeDx, homeDy) + STARTUP_HAZARD_PADDING + 220);
+  const spawnOrbitR = Math.hypot(homeDx + spawnRadialX * spawnR, homeDy + spawnRadialY * spawnR);
+  const spawnTangent = Math.atan2(spawnTangentY, spawnTangentX);
+  const spawnSpeed = Math.sqrt((homeStar.mu * difficulty.gravity) / Math.max(spawnOrbitR, 1)) * 1.04;
+  const spawnOutwardSpeed = 72;
 
   player = {
-    x: homePlanet.x + spawnDx,
-    y: homePlanet.y + spawnDy,
-    vx: homePlanet.vx + Math.cos(spawnTangent) * spawnSpeed,
-    vy: homePlanet.vy + Math.sin(spawnTangent) * spawnSpeed,
+    x: homePlanet.x + spawnRadialX * spawnR,
+    y: homePlanet.y + spawnRadialY * spawnR,
+    vx: spawnTangentX * spawnSpeed + spawnRadialX * spawnOutwardSpeed,
+    vy: spawnTangentY * spawnSpeed + spawnRadialY * spawnOutwardSpeed,
     angle: spawnTangent,
     r: 8.5,
     fuel: 86,
@@ -1187,6 +1328,7 @@ function setupWorld(preview = false) {
     flowTime: 0,
     flowLevel: 0,
     nodeCooldown: 0,
+    startGrace: 1.8,
     alive: true
   };
 
@@ -1195,6 +1337,7 @@ function setupWorld(preview = false) {
   camera.shake = 0;
   camera.zoom = 1;
   ensureChunksAround(0, 0, lowPower ? 2 : 3);
+  cleanupStartupArea(player.x, player.y, STARTUP_CLEAR_RADIUS, true);
   chooseTarget(true);
   state = preview ? 'menu' : 'play';
 }
@@ -1260,9 +1403,11 @@ function routeBodyRisk(body) {
 function chooseTarget(force = false) {
   if (!player) return;
   ensureChunksAround(player.x, player.y, lowPower ? 3 : 4);
+  if (force && score === 0 && chain === 0) cleanupStartupArea(player.x, player.y, STARTUP_CLEAR_RADIUS, true);
+  const startupRoute = force && score === 0 && chain === 0;
 
   const speedAngle = Math.atan2(player.vy, player.vx);
-  const minD = (force ? 520 : 720 + Math.min(score, 45) * 7) * difficulty.targetMin;
+  const minD = (force ? 2200 : 720 + Math.min(score, 45) * 7) * difficulty.targetMin;
   const maxD = (force ? 2300 : 3100 + Math.min(score, 65) * 15) * difficulty.targetMax;
   const candidates = [];
   const sectorX = Math.floor(player.x / CHUNK);
@@ -1274,6 +1419,8 @@ function chooseTarget(force = false) {
     if (b.kind === 'blackhole' || b.home || b.visited) continue;
     const d = hypot(b.x - player.x, b.y - player.y);
     if (d < minD || d > maxD) continue;
+    if (startupRoute && b.kind === 'star' && d - (b.heatRadius || 0) < STARTUP_CLEAR_RADIUS) continue;
+    if (startupRoute && routeBodyRisk(b) > .58) continue;
     const a = Math.atan2(b.y - player.y, b.x - player.x);
     const forward = (Math.cos(angleDiff(speedAngle, a)) + 1) * .5;
     const rewardWeight = Math.sqrt(b.reward || 1) / 4;
@@ -1293,18 +1440,20 @@ function chooseTarget(force = false) {
     const fallbackSeed = hash2(sectorX * 197 + Math.floor(score / 3) + (force ? 23 : 0), sectorY * 149 + chain * 5 + routeChoice);
     const fallbackRng = mulberry32(fallbackSeed);
     const a = speedAngle + rnd(fallbackRng, -.75, .75);
-    const d = rnd(fallbackRng, 1700 * difficulty.targetMin, (3150 + score * 9) * difficulty.targetMax);
+    const d = rnd(fallbackRng, 2200 * difficulty.targetMin, (3150 + score * 9) * difficulty.targetMax);
     const tx = player.x + Math.cos(a) * d;
     const ty = player.y + Math.sin(a) * d;
     const depth = Math.floor(hypot(tx, ty) / CHUNK);
     const env = stellarEnvironmentBias(Math.floor(tx / CHUNK), Math.floor(ty / CHUNK));
-    const star = addStar(chooseStellarProfile(fallbackRng, Math.max(8, depth), env), tx, ty, fallbackRng);
+    const profile = startupRoute ? { family: 'main', class: 'K' } : chooseStellarProfile(fallbackRng, Math.max(8, depth), env);
+    const star = addStar(profile, tx, ty, fallbackRng);
     let companion = null;
     if (fallbackRng() < .28 && star.family === 'main') {
       const compEnv = clamp(env + rnd(fallbackRng, -.18, .18), -1, 1);
       companion = addCompanionStar(star, { family: 'main', class: chooseMainClass(fallbackRng, Math.max(9, depth + 1), compEnv) }, rnd(fallbackRng, 540, 920), fallbackRng() * TAU, fallbackRng);
     }
     populateSystemBodies(star, companion, fallbackRng, { minPlanets: star.family === 'neutron' ? 0 : 1, maxPlanets: 3 });
+    cleanupStartupArea(player.x, player.y, STARTUP_CLEAR_RADIUS, true);
     routeOptions = [star];
     routeChoice = 0;
     setTarget(star, true);
@@ -1503,25 +1652,7 @@ function updateBodies(dt) {
     if (b.parentId) {
       const parent = byId.get(b.parentId);
       if (!parent) continue;
-      const oldX = b.x;
-      const oldY = b.y;
-      const e = b.orbitE || 0;
-      const a = b.orbitA || b.orbitR || 1;
-      const cosNu = Math.cos(b.orbitAngle);
-      const denom = Math.max(1e-4, 1 - e * e);
-      const keplerFactor = e > .01 ? Math.pow(1 + e * cosNu, 2) / Math.pow(denom, 1.5) : 1;
-      b.orbitAngle += b.orbitSpeed * keplerFactor * dt;
-      const nu = b.orbitAngle;
-      const rr = e > .01 ? a * (1 - e * e) / Math.max(.08, 1 + e * Math.cos(nu)) : a;
-      const arg = b.orbitArg || 0;
-      const cx = Math.cos(arg) * rr * Math.cos(nu) - Math.sin(arg) * rr * Math.sin(nu);
-      const cy = Math.sin(arg) * rr * Math.cos(nu) + Math.cos(arg) * rr * Math.sin(nu);
-      b.x = parent.x + cx;
-      b.y = parent.y + cy;
-      if (dt > 0) {
-        b.vx = (b.x - oldX) / dt;
-        b.vy = (b.y - oldY) / dt;
-      }
+      advanceOrbitalState(b, parent, dt);
     }
   }
 }
@@ -1714,6 +1845,7 @@ function update(dt) {
 }
 
 function updateGame(dt) {
+  player.startGrace = Math.max(0, (player.startGrace || 0) - dt);
   if (frame % (lowPower ? 28 : 14) === 0) {
     ensureChunksAround(player.x, player.y, lowPower ? 1 : 2);
     cleanupFarBodies();
@@ -1908,6 +2040,78 @@ function detectGravityAssist(g, dt) {
   }
 }
 
+function riskLevel(value) {
+  if (value >= .95) return 3;
+  if (value >= .86) return 2;
+  if (value >= .72) return 1;
+  return 0;
+}
+
+function emitHeatFeedback(dt, level) {
+  if (!level || Math.random() > dt * (level >= 3 ? 36 : 18)) return;
+  const side = rnd(Math.random, -1, 1);
+  const a = player.angle + Math.PI * .55 * side + rnd(Math.random, -.35, .35);
+  const speed = rnd(Math.random, 24, 82) * (1 + level * .18);
+  particles.push({
+    x: player.x + rnd(Math.random, -9, 9),
+    y: player.y + rnd(Math.random, -9, 9),
+    vx: player.vx * .05 + Math.cos(a) * speed,
+    vy: player.vy * .05 + Math.sin(a) * speed,
+    size: rnd(Math.random, .9, 2.2 + level * .35),
+    hue: rnd(Math.random, 18, 42),
+    life: rnd(Math.random, .18, .34),
+    max: .34,
+    drag: .90
+  });
+}
+
+function emitStressFeedback(dt, tide, level) {
+  if (!level || Math.random() > dt * (level >= 3 ? 28 : 12)) return;
+  const hue = tide.body && tide.body.hue ? clamp(tide.body.hue + 32, 235, 282) : rnd(Math.random, 238, 272);
+  particles.push({
+    x: player.x + rnd(Math.random, -15, 15),
+    y: player.y + rnd(Math.random, -15, 15),
+    vx: rnd(Math.random, -28, 28),
+    vy: rnd(Math.random, -28, 28),
+    size: rnd(Math.random, 1.2, 3.2),
+    hue,
+    life: rnd(Math.random, .18, .30),
+    max: .30,
+    drag: .88
+  });
+}
+
+function triggerRiskFeedback(heatLevel, stressLevel, rad, tide) {
+  const maxLevel = Math.max(heatLevel, stressLevel);
+  if (!maxLevel) {
+    player.lastHeatRiskLevel = 0;
+    player.lastStressRiskLevel = 0;
+    return;
+  }
+
+  const previousHeat = player.lastHeatRiskLevel || 0;
+  const previousStress = player.lastStressRiskLevel || 0;
+  const escalated = heatLevel > previousHeat || stressLevel > previousStress;
+  if (warningClock <= 0 || escalated) {
+    const heatDominant = heatLevel >= stressLevel;
+    const cue = maxLevel >= 3 ? 'critical' : (heatDominant ? 'heat' : 'stress');
+    const cueBody = heatDominant ? rad.body : tide.body;
+    soundCue(cue, cueBody, maxLevel);
+    warningClock = maxLevel >= 3 ? .95 : (maxLevel === 2 ? .78 : .62);
+    camera.shake = Math.max(camera.shake, maxLevel >= 3 ? 7 : (maxLevel === 2 ? 4 : 2));
+    if (messageTime <= .16 || (message && message.startsWith('Риск:'))) {
+      const levelText = maxLevel >= 3 ? 'критический риск' : 'Риск';
+      message = heatLevel && stressLevel
+        ? `${levelText}: перегрев и перегрузка`
+        : (heatLevel ? `${levelText}: перегрев` : `${levelText}: перегрузка`);
+      messageTime = maxLevel >= 3 ? .95 : .78;
+    }
+  }
+
+  player.lastHeatRiskLevel = heatLevel;
+  player.lastStressRiskLevel = stressLevel;
+}
+
 function updateThermalAndFuel(dt) {
   const rad = radiationAt(player.x, player.y);
   const flux = rad.flux;
@@ -1921,26 +2125,22 @@ function updateThermalAndFuel(dt) {
   player.heat = clamp(player.heat, 0, 1.18);
 
   const tide = tidalStressAt(player.x, player.y);
-  const targetStress = clamp(tide.stress * difficulty.stressRisk, 0, 1.28);
+  const startGraceActive = (player.startGrace || 0) > 0;
+  const targetStress = startGraceActive
+    ? clamp(tide.stress * difficulty.stressRisk, 0, .64)
+    : clamp(tide.stress * difficulty.stressRisk, 0, 1.28);
   player.stress = lerp(player.stress || 0, targetStress, 1 - Math.pow(.08, dt));
   if (player.stress > .92 && tide.body && Math.random() < dt * 16) {
     particles.push({ x: player.x + rnd(Math.random, -12, 12), y: player.y + rnd(Math.random, -12, 12), vx: rnd(Math.random, -18, 18), vy: rnd(Math.random, -18, 18), size: rnd(Math.random, 1, 2.5), hue: tide.body.hue || 255, life: .28, max: .28, drag: .92 });
   }
 
-  const heatRisk = player.heat > .72;
-  const stressRisk = player.stress > .72;
+  const heatLevel = riskLevel(player.heat);
+  const stressLevel = riskLevel(player.stress);
+  emitHeatFeedback(dt, heatLevel);
+  emitStressFeedback(dt, tide, stressLevel);
   warningClock = Math.max(0, warningClock - dt);
-  if (warningClock <= 0 && (heatRisk || stressRisk)) {
-    warningClock = .62;
-    soundCue('warn');
-    if (messageTime <= .16 || (message && message.startsWith('Риск:'))) {
-      message = heatRisk && stressRisk
-        ? 'Риск: перегрев и перегрузка'
-        : (heatRisk ? 'Риск: перегрев' : 'Риск: перегрузка');
-      messageTime = .78;
-    }
-  }
-
+  if (startGraceActive && player.stress >= 1.08) player.stress = 1.07;
+  triggerRiskFeedback(heatLevel, stressLevel, rad, tide);
   if (player.heat >= 1) endGame('Корабль перегрелся у звезды');
   if (player.stress >= 1.08) endGame('Корабль не выдержал нагрузки');
 }
@@ -2038,14 +2238,19 @@ function checkLagrangeNodes(dt) {
 
 function checkCollisionsAndScans(dt) {
   const now = time;
+  const startGraceActive = (player.startGrace || 0) > 0;
   for (const b of bodies) {
     const d = hypot(player.x - b.x, player.y - b.y);
     if (b.kind === 'blackhole') {
       if (d < b.event) {
+        if (startGraceActive) continue;
+        soundCue('impact', b, 3);
         endGame('Корабль ушёл за горизонт событий');
         return;
       }
     } else if (d < b.r + player.r) {
+      if (startGraceActive) continue;
+      soundCue('impact', b, b.kind === 'star' ? 3 : 2);
       endGame(b.kind === 'star' ? 'Корабль сгорел в звезде' : 'Корабль столкнулся с объектом');
       return;
     }
@@ -2199,6 +2404,33 @@ function updateTexts(dt) {
 
 const visibleBodiesScratch = [];
 const visibleBodyScoresScratch = [];
+
+function renderSafeArea() {
+  if (typeof uiSafeArea === 'function') return uiSafeArea();
+  const margin = W < 520 ? 12 : 22;
+  return {
+    left: margin,
+    top: margin,
+    right: W - margin,
+    bottom: H - margin,
+    width: Math.max(0, W - margin * 2),
+    height: Math.max(0, H - margin * 2),
+    margin
+  };
+}
+
+function clampToRenderSafeArea(x, y, pad = 0) {
+  const safe = renderSafeArea();
+  const left = safe.left + pad;
+  const right = safe.right - pad;
+  const top = safe.top + pad;
+  const bottom = safe.bottom - pad;
+  return {
+    x: clamp(x, left, Math.max(left, right)),
+    y: clamp(y, top, Math.max(top, bottom)),
+    safe
+  };
+}
 
 function draw() {
   drawBackground();
@@ -2653,24 +2885,33 @@ function drawRoute() {
   ctx.setLineDash([]);
 
   if (objective && b.x > -90 && b.x < W + 90 && b.y > -90 && b.y < H + 90) {
+    const label = clampToRenderSafeArea(b.x, b.y - target.r * camera.zoom - 26, 8);
     ctx.fillStyle = `hsla(${target.hue}, 96%, 78%, .82)`;
     ctx.font = '11px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
     ctx.textAlign = 'center';
-    ctx.fillText(objective.code, b.x, b.y - target.r * camera.zoom - 26);
+    ctx.fillText(objective.code, label.x, label.y);
   }
 
   if (b.x < -70 || b.x > W + 70 || b.y < -70 || b.y > H + 70) {
     const nx = dx / d;
     const ny = dy / d;
-    const margin = 38;
-    const scale = Math.min(
-      Math.abs((W / 2 - margin) / (nx || .0001)),
-      Math.abs((H / 2 - margin) / (ny || .0001))
-    );
-    const ex = clamp(W / 2 + nx * scale, margin, W - margin);
-    const ey = clamp(H / 2 + ny * scale, margin, H - margin);
+    const safePoint = clampToRenderSafeArea(W / 2, H / 2, 18);
+    const safe = safePoint.safe;
+    const left = safe.left + 18;
+    const right = safe.right - 18;
+    const top = safe.top + 18;
+    const bottom = safe.bottom - 18;
+    const cx = clamp((left + right) / 2, left, Math.max(left, right));
+    const cy = clamp((top + bottom) / 2, top, Math.max(top, bottom));
+    const scaleX = nx > 0 ? (right - cx) / nx : (nx < 0 ? (left - cx) / nx : Infinity);
+    const scaleY = ny > 0 ? (bottom - cy) / ny : (ny < 0 ? (top - cy) / ny : Infinity);
+    const scale = Math.max(0, Math.min(scaleX, scaleY));
+    const ex = clamp(cx + nx * scale, left, Math.max(left, right));
+    const ey = clamp(cy + ny * scale, top, Math.max(top, bottom));
+    const angle = Math.atan2(ny, nx);
+    ctx.save();
     ctx.translate(ex, ey);
-    ctx.rotate(Math.atan2(ny, nx));
+    ctx.rotate(angle);
     ctx.fillStyle = `hsla(${target.hue}, 94%, 76%, .9)`;
     ctx.beginPath();
     ctx.moveTo(14, 0);
@@ -2679,11 +2920,12 @@ function drawRoute() {
     ctx.lineTo(-9, 7);
     ctx.closePath();
     ctx.fill();
-    ctx.rotate(-Math.atan2(ny, nx));
+    ctx.restore();
     ctx.fillStyle = 'rgba(238,246,255,.45)';
     ctx.font = '11px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
     ctx.textAlign = 'center';
-    ctx.fillText(`${objective ? objective.code + ' ' : ''}${Math.round(worldDistanceToTarget())}`, 0, 24);
+    const labelY = clamp(ey + (ey > cy ? -18 : 24), top + 8, bottom - 4);
+    ctx.fillText(`${objective ? objective.code + ' ' : ''}${Math.round(worldDistanceToTarget())}`, ex, labelY);
   }
   ctx.restore();
 }
@@ -2771,9 +3013,73 @@ function drawBodyFields(b, quality = renderQuality()) {
   ctx.restore();
 }
 
+function isHazardBody(b) {
+  return b.kind === 'star'
+    || b.kind === 'blackhole'
+    || b.kind === 'comet'
+    || b.family === 'neutron'
+    || b.family === 'whitedwarf';
+}
+
+function hazardScreenRadius(b, r) {
+  if (!isHazardBody(b)) return r;
+  if (b.kind === 'blackhole') return Math.max(r, 7.5);
+  if (b.kind === 'comet') return Math.max(r, 5.5);
+  return Math.max(r, b.family === 'neutron' || b.family === 'whitedwarf' ? 6.5 : 6);
+}
+
+function drawHazardContour(b, s, r) {
+  if (!isHazardBody(b)) return;
+  const pulse = Math.sin(time * 3 + b.phase) * .5;
+  ctx.save();
+  ctx.translate(s.x, s.y);
+  ctx.rotate((b.spin || .12) * time + b.phase);
+  ctx.lineWidth = b.kind === 'blackhole' ? 1.35 : 1;
+  ctx.strokeStyle = b.kind === 'blackhole'
+    ? 'rgba(246,250,255,.70)'
+    : `hsla(${b.hue}, 96%, 86%, .64)`;
+  ctx.setLineDash(b.kind === 'comet' ? [6, 4] : [2, 4]);
+  ctx.lineDashOffset = -time * (b.kind === 'blackhole' ? 20 : 14);
+  ctx.beginPath();
+  ctx.arc(0, 0, r + (b.kind === 'blackhole' ? 4.5 : 3.5) + pulse, 0, TAU);
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  if (b.kind === 'star') {
+    const ticks = b.family === 'neutron' ? 4 : 8;
+    ctx.strokeStyle = `hsla(${b.hue + 35}, 100%, 88%, .55)`;
+    for (let i = 0; i < ticks; i++) {
+      const a = i / ticks * TAU;
+      const inner = r + 5;
+      const outer = r + (i % 2 ? 10 : 13);
+      ctx.beginPath();
+      ctx.moveTo(Math.cos(a) * inner, Math.sin(a) * inner);
+      ctx.lineTo(Math.cos(a) * outer, Math.sin(a) * outer);
+      ctx.stroke();
+    }
+  } else if (b.kind === 'blackhole') {
+    ctx.strokeStyle = 'rgba(246,250,255,.42)';
+    for (let i = -1; i <= 1; i++) {
+      ctx.beginPath();
+      ctx.moveTo(-r * 2.3, i * 5 - r * .25);
+      ctx.lineTo(r * 2.3, i * 5 + r * .25);
+      ctx.stroke();
+    }
+  } else if (b.kind === 'comet') {
+    ctx.strokeStyle = `hsla(${b.hue + 28}, 96%, 88%, .55)`;
+    ctx.beginPath();
+    ctx.moveTo(-r - 4, -r - 4);
+    ctx.lineTo(r + 4, r + 4);
+    ctx.moveTo(-r - 4, r + 4);
+    ctx.lineTo(r + 4, -r - 4);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
 function drawBodyCore(b) {
   const s = worldToScreen(b.x, b.y);
-  const r = b.r * camera.zoom;
+  const r = hazardScreenRadius(b, b.r * camera.zoom);
   const pulse = 1 + Math.sin(time * 1.1 + b.phase) * .035;
 
   ctx.save();
@@ -2782,6 +3088,7 @@ function drawBodyCore(b) {
   else if (b.kind === 'asteroid') drawAsteroidBody(b, s, r);
   else if (b.kind === 'comet') drawCometBody(b, s, r);
   else drawPlanetBody(b, s, r, pulse);
+  drawHazardContour(b, s, r);
 
   if ((b.kind === 'star' || b.target || b.kind === 'comet') && r > 7) {
     ctx.fillStyle = `hsla(${b.hue}, 92%, 80%, ${b.target ? .78 : .34})`;
@@ -2997,9 +3304,12 @@ function drawPlayer() {
   }
 
   const s = worldToScreen(player.x, player.y);
-  ctx.translate(s.x, s.y);
-  ctx.rotate(player.angle);
   const scale = camera.zoom;
+  const heatFx = clamp((player.heat - .72) / .28, 0, 1);
+  const stressFx = clamp(((player.stress || 0) - .72) / .36, 0, 1);
+  ctx.translate(s.x, s.y);
+  if (stressFx > 0) ctx.translate(rnd(Math.random, -1.8, 1.8) * stressFx * scale, rnd(Math.random, -1.8, 1.8) * stressFx * scale);
+  ctx.rotate(player.angle);
 
   if (player.thrusting) {
     const flame = (10 + Math.sin(time * 45) * 2 + Math.random() * 3) * scale;
@@ -3011,6 +3321,33 @@ function drawPlayer() {
     ctx.lineTo(-12 * scale - flame, 4.6 * scale);
     ctx.closePath();
     ctx.fill();
+  }
+
+  if (heatFx > 0) {
+    const flicker = .68 + Math.sin(time * 18) * .18 + Math.random() * .14;
+    ctx.strokeStyle = `hsla(28, 100%, 66%, ${(.20 + heatFx * .30) * flicker})`;
+    ctx.lineWidth = 1 + heatFx * 1.4;
+    ctx.beginPath();
+    ctx.arc(0, 0, (18 + heatFx * 8) * scale, 0, TAU);
+    ctx.stroke();
+  }
+
+  if (stressFx > 0) {
+    ctx.save();
+    ctx.lineCap = 'round';
+    ctx.setLineDash([3 * scale, 5 * scale]);
+    ctx.lineDashOffset = -time * 28;
+    for (let i = 0; i < 3; i++) {
+      const arcPhase = time * (1.8 + i * .25) + i * 2.1;
+      const r = (19 + i * 4 + stressFx * 4) * scale;
+      ctx.strokeStyle = `hsla(${242 + i * 16}, 98%, ${70 + i * 4}%, ${(.12 + stressFx * .20) * (1 - i * .18)})`;
+      ctx.lineWidth = (1 + stressFx * .9) * scale;
+      ctx.beginPath();
+      ctx.arc(0, 0, r, arcPhase, arcPhase + .9 + stressFx * .7);
+      ctx.stroke();
+    }
+    ctx.setLineDash([]);
+    ctx.restore();
   }
 
   ctx.strokeStyle = `rgba(160, 232, 255, ${player.heat > .65 ? .18 + Math.sin(time * 11) * .08 : .08})`;
@@ -3046,6 +3383,11 @@ function drawTexts() {
   for (const f of texts) {
     const s = worldToScreen(f.x, f.y);
     const a = clamp(f.life / f.max, 0, 1);
+    ctx.lineWidth = 4;
+    ctx.strokeStyle = `rgba(1, 5, 13, ${a * .88})`;
+    ctx.shadowColor = 'rgba(0,0,0,0)';
+    ctx.shadowBlur = 0;
+    ctx.strokeText(f.text, s.x, s.y);
     ctx.fillStyle = `hsla(${f.hue}, 95%, 77%, ${a})`;
     ctx.shadowColor = `hsla(${f.hue}, 95%, 56%, ${a})`;
     ctx.shadowBlur = 16;
@@ -3066,6 +3408,51 @@ function drawTexts() {
 
 function uiMargin() {
   return W < 520 ? 12 : 22;
+}
+
+function isMiniHudViewport() {
+  return W <= 360 && H <= 480;
+}
+
+function uiSafeArea() {
+  const margin = uiMargin();
+  const compact = W < 640 || H < 540;
+  const safe = {
+    left: margin,
+    top: margin,
+    right: W - margin,
+    bottom: H - margin,
+    margin,
+    compact,
+    miniHud: isMiniHudViewport(),
+    topClearY: margin,
+    bottomControlsTop: H - margin,
+    width: Math.max(0, W - margin * 2),
+    height: Math.max(0, H - margin * 2)
+  };
+
+  if (state !== 'play') return safe;
+
+  const scoreH = compact ? 94 : 108;
+  const shipW = compact ? (W < 460 ? 132 : 148) : 176;
+  const shipVisible = safe.miniHud || (W - shipW - margin >= (compact ? 202 : 280));
+  const shipH = safe.miniHud ? 74 : (compact ? 122 : 136);
+  safe.topClearY = margin + Math.max(scoreH, shipVisible ? shipH : 0);
+
+  if (objective && target && (!compact || H > 500)) {
+    const objY = safe.topClearY + (compact ? 8 : 10);
+    const objH = compact ? (W < 430 ? 116 : 110) : 128;
+    if (objY < H - (W < 560 ? 126 : 138)) safe.topClearY = objY + objH;
+  }
+
+  const buttonH = W < 560 ? 32 : 34;
+  const buttonBottom = W < 560 ? 14 : 18;
+  safe.bottomControlsTop = H - buttonH - buttonBottom - 8;
+  safe.top = Math.min(H - margin, safe.topClearY + 8);
+  safe.bottom = Math.max(safe.top + 28, safe.bottomControlsTop);
+  safe.width = Math.max(0, safe.right - safe.left);
+  safe.height = Math.max(0, safe.bottom - safe.top);
+  return safe;
 }
 
 function drawSoftPanel(x, y, w, h, radius = 16, alpha = .58) {
@@ -3174,6 +3561,23 @@ function drawMetricBar(x, y, w, label, value, hue, valueText = '') {
   ctx.restore();
 }
 
+function drawMiniMetric(x, y, w, label, value, hue) {
+  value = clamp(value, 0, 1);
+  ctx.save();
+  ctx.font = '700 9px ui-sans-serif, system-ui';
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'top';
+  ctx.fillStyle = 'rgba(238,246,255,.54)';
+  ctx.fillText(label, x, y);
+  ctx.fillStyle = 'rgba(238,246,255,.08)';
+  roundRect(x + 48, y + 3, w - 48, 5, 3);
+  ctx.fill();
+  ctx.fillStyle = `hsla(${hue}, 95%, 68%, .78)`;
+  roundRect(x + 48, y + 3, (w - 48) * value, 5, 3);
+  ctx.fill();
+  ctx.restore();
+}
+
 function objectiveVerb(obj) {
   if (!obj) return 'выбери цель';
   if (obj.type === 'orbit') return 'держи ровную орбиту';
@@ -3270,7 +3674,22 @@ function drawShipPanel(compact) {
   const h = compact ? 122 : 136;
   const x = W - w - margin;
   const y = margin;
-  if (x < (compact ? 202 : 280)) return null;
+  if (x < (compact ? 202 : 280)) {
+    if (!isMiniHudViewport()) return null;
+    const miniW = Math.max(118, W - (margin * 2 + (W < 340 ? 172 : 184)));
+    const miniX = W - margin - miniW;
+    const miniH = 74;
+    drawSoftPanel(miniX, y, miniW, miniH, 14, .48);
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'top';
+    ctx.fillStyle = 'rgba(149,228,255,.68)';
+    ctx.font = '700 9px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
+    ctx.fillText('КОРАБЛЬ', miniX + 10, y + 9);
+    drawMiniMetric(miniX + 10, y + 25, miniW - 20, 'топл', player.fuel / player.maxFuel, 196);
+    drawMiniMetric(miniX + 10, y + 41, miniW - 20, 'нагрев', player.heat, 18);
+    drawMiniMetric(miniX + 10, y + 57, miniW - 20, 'нагр', player.stress || 0, 270);
+    return { x: miniX, y, w: miniW, h: miniH };
+  }
   drawSoftPanel(x, y, w, h, 16, .50);
   ctx.textAlign = 'left';
   ctx.textBaseline = 'top';
@@ -3307,7 +3726,8 @@ function isCompactObjectiveMessage(text) {
 
 function drawPlayHud() {
   const compact = W < 640 || H < 540;
-  const margin = uiMargin();
+  const safe = uiSafeArea();
+  const margin = safe.margin;
   const scoreBox = drawScorePanel(margin, margin, compact);
   const shipBox = drawShipPanel(compact);
   const stackedMobile = compact && W < 520;
@@ -3336,7 +3756,7 @@ function drawPlayHud() {
     drawStackedHint(tutorialHint, hintBottom, hintW + 16, 46, .40);
   }
 
-  return { topClearY, quickTop };
+  return { topClearY: Math.max(topClearY, safe.topClearY), quickTop, safe };
 }
 
 function drawHud() {
@@ -3550,37 +3970,39 @@ function drawQuickButtons() {
 }
 
 function overlayMetrics(menu = state === 'menu') {
+  const denseMenu = menu && W <= 568 && H <= 360;
   const narrow = W < 540;
-  const maxH = Math.max(260, H - 24);
-  const desiredH = menu ? (narrow ? 496 : 430) : (narrow ? 326 : 292);
-  const minH = menu ? (narrow ? 392 : 380) : (narrow ? 286 : 264);
-  const boxW = Math.min(menu ? (narrow ? W - 24 : 680) : (narrow ? W - 28 : 540), W - 24);
+  const maxH = Math.max(denseMenu ? 280 : 260, H - (denseMenu ? 16 : 24));
+  const desiredH = menu ? (denseMenu ? H - 16 : (narrow ? 496 : 430)) : (narrow ? 326 : 292);
+  const minH = menu ? (denseMenu ? 280 : (narrow ? 392 : 380)) : (narrow ? 286 : 264);
+  const boxW = Math.min(menu ? (denseMenu ? W - 16 : (narrow ? W - 24 : 680)) : (narrow ? W - 28 : 540), W - (denseMenu ? 16 : 24));
   const boxH = clamp(desiredH, Math.min(minH, maxH), maxH);
   return { boxW, boxH, x: W / 2 - boxW / 2, y: H / 2 - boxH / 2 };
 }
 
 function menuLayout() {
   const m = overlayMetrics(true);
-  const narrow = W < 540;
-  const tight = narrow && m.boxH < 430;
-  const pad = narrow ? 18 : 24;
-  const gap = narrow ? 7 : 10;
+  const dense = W <= 568 && H <= 360;
+  const narrow = W < 540 && !dense;
+  const tight = dense || (narrow && m.boxH < 430);
+  const pad = dense ? 16 : (narrow ? 18 : 24);
+  const gap = dense ? 8 : (narrow ? 7 : 10);
   const rows = narrow ? DIFFICULTIES.length : 1;
   const cols = narrow ? 1 : DIFFICULTIES.length;
-  const titleY = m.y + (tight ? 30 : (narrow ? 38 : 42));
-  const subtitleY = m.y + (tight ? 56 : (narrow ? 68 : 72));
-  const metaY = m.y + (tight ? 82 : (narrow ? 98 : 104));
-  const cardsY = m.y + (tight ? 104 : (narrow ? 124 : 140));
-  const controlsY = m.y + m.boxH - (tight ? 24 : (narrow ? 28 : 24));
-  const startY = controlsY - (tight ? 50 : (narrow ? 56 : 54));
-  const soundY = startY - (tight ? 40 : (narrow ? 44 : 48));
-  const cardMaxBottom = soundY - (tight ? 8 : (narrow ? 12 : 18));
+  const titleY = m.y + (dense ? 27 : (tight ? 30 : (narrow ? 38 : 42)));
+  const subtitleY = m.y + (dense ? 51 : (tight ? 56 : (narrow ? 68 : 72)));
+  const metaY = m.y + (dense ? 72 : (tight ? 82 : (narrow ? 98 : 104)));
+  const cardsY = m.y + (dense ? 91 : (tight ? 104 : (narrow ? 124 : 140)));
+  const controlsY = m.y + m.boxH - (dense ? 24 : (tight ? 24 : (narrow ? 28 : 24)));
+  const startY = dense ? m.y + m.boxH - 43 : controlsY - (tight ? 50 : (narrow ? 56 : 54));
+  const soundY = dense ? startY : startY - (tight ? 40 : (narrow ? 44 : 48));
+  const cardMaxBottom = dense ? startY - 12 : soundY - (tight ? 8 : (narrow ? 12 : 18));
   const usable = m.boxW - pad * 2;
   const cardW = (usable - gap * (cols - 1)) / cols;
   const cardH = narrow
     ? clamp((cardMaxBottom - cardsY - gap * (rows - 1)) / rows, tight ? 30 : 42, 62)
-    : clamp(cardMaxBottom - cardsY, 74, 88);
-  return { ...m, narrow, tight, pad, gap, rows, cols, titleY, subtitleY, metaY, cardsY, controlsY, startY, soundY, cardW, cardH };
+    : clamp(cardMaxBottom - cardsY, dense ? 58 : 74, dense ? 70 : 88);
+  return { ...m, narrow, dense, tight, pad, gap, rows, cols, titleY, subtitleY, metaY, cardsY, controlsY, startY, soundY, cardW, cardH };
 }
 
 function menuDifficultyRects() {
@@ -3595,6 +4017,11 @@ function menuDifficultyRects() {
 function menuSoundRect() {
   const isMenu = state === 'menu';
   const m = isMenu ? menuLayout() : overlayMetrics(false);
+  if (isMenu && m.dense) {
+    const w = Math.min(148, (m.boxW - 56) * .42);
+    const h = 32;
+    return { x: W / 2 - w - 8, y: m.soundY, w, h };
+  }
   const w = Math.min(isMenu ? 184 : 174, m.boxW - 48);
   const h = 34;
   return { x: W / 2 - w / 2, y: isMenu ? m.soundY : m.y + m.boxH - 88, w, h };
@@ -3603,6 +4030,11 @@ function menuSoundRect() {
 function menuStartRect() {
   const isMenu = state === 'menu';
   const m = isMenu ? menuLayout() : overlayMetrics(false);
+  if (isMenu && m.dense) {
+    const w = Math.min(172, (m.boxW - 56) * .48);
+    const h = 34;
+    return { x: W / 2 + 8, y: m.startY, w, h };
+  }
   const w = Math.min(230, m.boxW - 56);
   const h = isMenu ? 42 : 40;
   return { x: W / 2 - w / 2, y: isMenu ? m.startY : m.y + m.boxH - 48, w, h };
@@ -3673,6 +4105,7 @@ function drawOverlayButton(r, label, primary = false, active = true) {
 }
 
 function drawMenuControlChips(layout) {
+  if (layout.dense) return;
   const labels = layout.narrow
     ? ['держи экран: тяга', 'два пальца: масштаб']
     : ['мышь/экран: тяга', 'R цель', 'G поле', 'N навигация'];
@@ -3704,7 +4137,7 @@ function drawOverlay(title, subtitle, action) {
   const menu = state === 'menu';
   const m = menu ? menuLayout() : overlayMetrics(false);
   const { boxW, boxH, x, y } = m;
-  const narrow = W < 540;
+  const narrow = W < 540 && !m.dense;
   ctx.save();
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
@@ -3727,15 +4160,15 @@ function drawOverlay(title, subtitle, action) {
   ctx.stroke();
 
   ctx.fillStyle = 'rgba(248,252,255,.98)';
-  ctx.font = menu ? `${Math.round((narrow ? 30 : 36) * uiScale)}px ui-sans-serif, system-ui` : `${Math.round((narrow ? 27 : 32) * uiScale)}px ui-sans-serif, system-ui`;
+  ctx.font = menu ? `${Math.round((m.dense ? 24 : (narrow ? 30 : 36)) * uiScale)}px ui-sans-serif, system-ui` : `${Math.round((narrow ? 27 : 32) * uiScale)}px ui-sans-serif, system-ui`;
   ctx.fillText(fitText(title, boxW - 44), W / 2, menu ? m.titleY : y + 45);
   ctx.fillStyle = menu ? 'rgba(238,246,255,.80)' : 'rgba(238,246,255,.64)';
-  ctx.font = `${narrow ? 12 : 13}px ui-sans-serif, system-ui`;
+  ctx.font = `${m.dense ? 11 : (narrow ? 12 : 13)}px ui-sans-serif, system-ui`;
   ctx.fillText(fitText(subtitle, boxW - 48), W / 2, menu ? m.subtitleY : y + 76);
 
   if (menu) {
     ctx.fillStyle = 'rgba(169,222,255,.72)';
-    ctx.font = '10px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
+    ctx.font = `${m.dense ? 9 : 10}px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace`;
     ctx.fillText('3 режима · поле / дальность / контроль', W / 2, m.metaY);
 
     for (const r of menuDifficultyRects()) {
@@ -3745,34 +4178,34 @@ function drawOverlay(title, subtitle, action) {
       card.addColorStop(0, active ? 'rgba(30, 72, 118, .84)' : 'rgba(8, 23, 45, .66)');
       card.addColorStop(1, active ? 'rgba(8, 28, 56, .76)' : 'rgba(4, 12, 27, .56)');
       ctx.fillStyle = card;
-      roundRect(r.x, r.y, r.w, r.h, 14);
+      roundRect(r.x, r.y, r.w, r.h, m.dense ? 11 : 14);
       ctx.fill();
       ctx.strokeStyle = active ? 'rgba(154,235,255,.82)' : 'rgba(139,230,255,.22)';
       ctx.lineWidth = active ? 1.5 : 1;
-      roundRect(r.x, r.y, r.w, r.h, 14);
+      roundRect(r.x, r.y, r.w, r.h, m.dense ? 11 : 14);
       ctx.stroke();
       ctx.fillStyle = active ? 'rgba(132,226,255,.84)' : 'rgba(132,226,255,.28)';
       roundRect(r.x + 9, r.y + 9, 3, r.h - 18, 2);
       ctx.fill();
 
-      ctx.textAlign = narrow ? 'left' : 'center';
-      const tx = narrow ? r.x + 20 : r.x + r.w / 2;
+      ctx.textAlign = (narrow || m.dense) ? 'left' : 'center';
+      const tx = (narrow || m.dense) ? r.x + 20 : r.x + r.w / 2;
       ctx.fillStyle = active ? 'rgba(248,252,255,.98)' : 'rgba(238,248,255,.86)';
-      ctx.font = '800 13px ui-sans-serif, system-ui';
-      ctx.fillText(fitText(`${d.label || d.name}`, narrow ? r.w - 78 : r.w - 22), tx, r.y + (narrow ? (r.h < 38 ? 14 : 15) : 18));
+      ctx.font = `${m.dense ? 12 : 13}px ui-sans-serif, system-ui`;
+      ctx.fillText(fitText(`${d.label || d.name}`, (narrow || m.dense) ? r.w - 42 : r.w - 22), tx, r.y + (narrow ? (r.h < 38 ? 14 : 15) : (m.dense ? 17 : 18)));
       if (r.h >= 38) {
         ctx.fillStyle = active ? 'rgba(158,235,255,.92)' : 'rgba(132,226,255,.68)';
         ctx.font = '10px ui-sans-serif, system-ui';
-        ctx.fillText(fitText(d.title, narrow ? r.w - 40 : r.w - 22), tx, r.y + (narrow ? 31 : 37));
+        ctx.fillText(fitText(d.title, (narrow || m.dense) ? r.w - 40 : r.w - 22), tx, r.y + (narrow ? 31 : (m.dense ? 34 : 37)));
       }
-      if (!narrow) {
+      if (!narrow && !m.dense) {
         ctx.fillStyle = 'rgba(255,214,145,.68)';
         ctx.font = '9px ui-sans-serif, system-ui';
         ctx.fillText(fitText(`${d.riskText} · ${d.rewardText}`, r.w - 18), tx, r.y + r.h - 32);
         ctx.fillStyle = 'rgba(238,246,255,.54)';
         ctx.font = '9px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
         ctx.fillText(`поле ${fmtNum(d.gravity, 2)} · дальн. ${fmtNum(d.targetMax, 2)}`, tx, r.y + r.h - 16);
-      } else {
+      } else if (narrow) {
         ctx.textAlign = 'right';
         ctx.fillStyle = 'rgba(238,246,255,.58)';
         ctx.font = '9px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';

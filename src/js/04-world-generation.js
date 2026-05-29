@@ -6,11 +6,63 @@
 
 'use strict';
 
+const STARTUP_CLEAR_RADIUS = 1500;
+const STARTUP_HAZARD_PADDING = 360;
+
 function orbitSpeedAround(parentMu, orbitA, rng, minMul = .96, maxMul = 1.04) {
   if (!parentMu || !orbitA) return 0;
   const base = Math.sqrt(parentMu / Math.max(orbitA * orbitA * orbitA, 1));
   const dir = rng() < .5 ? -1 : 1;
   return base * rnd(rng, minMul, maxMul) * dir;
+}
+
+function orbitKeplerFactor(body, angle = body.orbitAngle || 0) {
+  const e = clamp(body.orbitE || 0, 0, .92);
+  if (e <= .01) return 1;
+  const denom = Math.max(1e-4, 1 - e * e);
+  return Math.pow(1 + e * Math.cos(angle), 2) / Math.pow(denom, 1.5);
+}
+
+function orbitalStateAt(parent, body, angle = body.orbitAngle || 0) {
+  const a = body.orbitA || body.orbitR || 0;
+  if (!parent || !a) return { x: body.x || 0, y: body.y || 0, vx: body.vx || 0, vy: body.vy || 0 };
+
+  const e = clamp(body.orbitE || 0, 0, .92);
+  const p = Math.max(1, a * (1 - e * e));
+  const cosNu = Math.cos(angle);
+  const sinNu = Math.sin(angle);
+  const rr = e > .01 ? p / Math.max(.08, 1 + e * cosNu) : a;
+  const arg = body.orbitArg || 0;
+  const cosArg = Math.cos(arg);
+  const sinArg = Math.sin(arg);
+  const localX = rr * cosNu;
+  const localY = rr * sinNu;
+
+  const rate = (body.orbitSpeed || 0) * orbitKeplerFactor(body, angle);
+  const drDnu = e > .01 ? (p * e * sinNu) / Math.max(.0064, Math.pow(1 + e * cosNu, 2)) : 0;
+  const dxDnu = drDnu * cosNu - rr * sinNu;
+  const dyDnu = drDnu * sinNu + rr * cosNu;
+
+  return {
+    x: parent.x + cosArg * localX - sinArg * localY,
+    y: parent.y + sinArg * localX + cosArg * localY,
+    vx: (parent.vx || 0) + (cosArg * dxDnu - sinArg * dyDnu) * rate,
+    vy: (parent.vy || 0) + (sinArg * dxDnu + cosArg * dyDnu) * rate
+  };
+}
+
+function applyOrbitalState(body, parent, angle = body.orbitAngle || 0) {
+  const state = orbitalStateAt(parent, body, angle);
+  body.x = state.x;
+  body.y = state.y;
+  body.vx = state.vx;
+  body.vy = state.vy;
+  return body;
+}
+
+function advanceOrbitalState(body, parent, dt) {
+  if (dt > 0) body.orbitAngle += (body.orbitSpeed || 0) * orbitKeplerFactor(body) * dt;
+  return applyOrbitalState(body, parent);
 }
 
 function localEccentricityCap(orbitA, innerOrbit, outerOrbit, hardCap = .16) {
@@ -210,6 +262,7 @@ function addCompanionStar(parent, profile, orbitR, angle, rng) {
   comp.orbitArg = rng() * TAU;
   comp.orbitAngle = angle;
   comp.orbitSpeed = orbitSpeedAround(parent.mu + comp.mu, orbitR, rng, .965, 1.035);
+  applyOrbitalState(comp, parent);
   comp.label = (comp.label || comp.class || 'ST') + '·B';
   comp.scan *= .88;
   comp.field = Math.min(comp.field, Math.max(2600, orbitR * 3.25));
@@ -287,6 +340,7 @@ function addPlanet(parent, orbitR, angle, rng, home = false, orbitTuning = null)
     gravitates: true,
     densityCode: mass / Math.max(radius * radius * radius, 1)
   };
+  if (parent) applyOrbitalState(body, parent);
   bodies.push(body);
   return body;
 }
@@ -328,6 +382,7 @@ function addAsteroid(parent, orbitR, angle, rng) {
     scanCooldown: 0,
     gravitates: true
   };
+  if (parent) applyOrbitalState(body, parent);
   bodies.push(body);
   return body;
 }
@@ -367,6 +422,7 @@ function addComet(parent, orbitA, angle, rng) {
     scanCooldown: 0,
     gravitates: true
   };
+  if (parent) applyOrbitalState(body, parent);
   bodies.push(body);
   return body;
 }
@@ -465,6 +521,8 @@ function ensureChunk(cx, cy) {
       rogue.reward += 1;
     }
   }
+
+  if (player) cleanupStartupArea(player.x, player.y, STARTUP_CLEAR_RADIUS);
 }
 
 function ensureChunksAround(x, y, range = 3) {
@@ -473,6 +531,22 @@ function ensureChunksAround(x, y, range = 3) {
   for (let ix = cx - range; ix <= cx + range; ix++) {
     for (let iy = cy - range; iy <= cy + range; iy++) ensureChunk(ix, iy);
   }
+}
+
+function cleanupStartupArea(x, y, minRadius = 900, includeHazards = false) {
+  let write = 0;
+  for (let read = 0; read < bodies.length; read++) {
+    const b = bodies[read];
+    const clearRadius = includeHazards && b.kind === 'star'
+      ? Math.max(minRadius, (b.heatRadius || 0) + minRadius)
+      : minRadius;
+    const keep = b.home
+      || b.target
+      || b.id === (target && target.id)
+      || hypot(b.x - x, b.y - y) >= clearRadius;
+    if (keep) bodies[write++] = b;
+  }
+  bodies.length = write;
 }
 
 function cleanupFarBodies() {

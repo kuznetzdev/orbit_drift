@@ -338,6 +338,160 @@ function assertGeneratedWorld() {
   assert(result.hasObjective, 'target objective is missing or detached');
 }
 
+function assertAudioFallbackAndRiskFeedback() {
+  const result = evaluate(`(() => {
+    const originalWarn = console.warn;
+    const originalSoundCue = soundCue;
+    let warnCount = 0;
+    const cues = [];
+
+    try {
+      console.warn = () => { warnCount += 1; };
+      soundOn = true;
+      audioCtx = null;
+      audioReady = false;
+      audioError = null;
+      audioUnlocking = false;
+
+      const ready = ensureAudio();
+      soundCue('heat', null, 1);
+      soundCue('stress', null, 2);
+      soundCue('critical', null, 3);
+      soundCue('impact', null, 2);
+
+      setupWorld(false);
+      soundCue = (name, body, amount) => { cues.push({ name, amount: amount || 0 }); };
+      warningClock = 0;
+      player.heat = .73;
+      player.stress = .12;
+      triggerRiskFeedback(riskLevel(player.heat), riskLevel(player.stress), { body: null }, { body: null });
+      player.heat = .10;
+      player.stress = .87;
+      triggerRiskFeedback(riskLevel(player.heat), riskLevel(player.stress), { body: null }, { body: null });
+      player.heat = .10;
+      player.stress = .96;
+      triggerRiskFeedback(riskLevel(player.heat), riskLevel(player.stress), { body: null }, { body: null });
+
+      return {
+        promiseLike: !!ready && typeof ready.then === 'function',
+        audioFailedCleanly: audioReady === false && !!audioError,
+        unlockingCleared: audioUnlocking === false,
+        warnedOnce: warnCount === 1,
+        levels: [riskLevel(.71), riskLevel(.72), riskLevel(.86), riskLevel(.95)].join(','),
+        cues: cues.map(cue => cue.name).join(',')
+      };
+    } finally {
+      console.warn = originalWarn;
+      soundCue = originalSoundCue;
+    }
+  })()`);
+
+  assert(result.promiseLike, 'ensureAudio must expose async readiness');
+  assert(result.audioFailedCleanly, 'audio fallback must keep the game alive without Web Audio');
+  assert(result.unlockingCleared, 'audioUnlocking must clear after failed unlock');
+  assert(result.warnedOnce, 'audio warnings must be throttled');
+  assert(result.levels === '0,1,2,3', 'risk thresholds must stay at 0.72/0.86/0.95');
+  assert(result.cues === 'heat,stress,critical', 'risk feedback must escalate through heat/stress/critical cues');
+}
+
+function assertStartupSurvival() {
+  const result = evaluate(`(() => {
+    const originalRandom = Math.random;
+    const previousDifficultyIndex = difficultyIndex;
+    const previousDifficulty = difficulty;
+    const samplesPerDifficulty = 200;
+    const seconds = 5;
+    const dt = 1 / 60;
+    const report = [];
+
+    try {
+      for (let d = 0; d < DIFFICULTIES.length; d++) {
+        difficultyIndex = d;
+        difficulty = DIFFICULTIES[d];
+        let deaths = 0;
+        let minClearance = Infinity;
+        let minForeignDistance = Infinity;
+        let worstReason = '';
+        let worstNearest = '';
+        let worstState = '';
+        let minTargetHeatClearance = Infinity;
+
+        for (let sample = 0; sample < samplesPerDifficulty; sample++) {
+          Math.random = mulberry32(hash2(0x51A7 + d * 193, sample * 7919 + 17));
+          time = 0;
+          frame = 0;
+          setupWorld(false);
+          clearGameplayInput();
+
+          const startX = player.x;
+          const startY = player.y;
+          if (target && target.kind === 'star') {
+            minTargetHeatClearance = Math.min(minTargetHeatClearance, hypot(target.x - startX, target.y - startY) - (target.heatRadius || 0));
+          }
+          for (const body of bodies) {
+            if (body.home) continue;
+            const centerDistance = hypot(body.x - startX, body.y - startY);
+            minForeignDistance = Math.min(minForeignDistance, centerDistance);
+            minClearance = Math.min(minClearance, centerDistance - (body.r || 0) - player.r);
+          }
+
+          const steps = Math.ceil(seconds / dt);
+          for (let i = 0; i < steps && state === 'play'; i++) update(dt);
+          if (state !== 'play') {
+            deaths += 1;
+            worstReason = message || worstReason;
+            let nearest = null;
+            let nearestD = Infinity;
+            for (const body of bodies) {
+              const dBody = hypot(player.x - body.x, player.y - body.y);
+              if (dBody < nearestD) {
+                nearest = body;
+                nearestD = dBody;
+              }
+            }
+            if (nearest) {
+              worstNearest = nearest.kind + ':'
+                + (nearest.label || nearest.class || '') + ':'
+                + (nearest.home ? 'home' : 'foreign') + ':'
+                + (nearest.target ? 'target' : 'free') + ':'
+                + nearestD.toFixed(2);
+            }
+            worstState = 't=' + time.toFixed(2)
+              + ', speed=' + hypot(player.vx, player.vy).toFixed(2)
+              + ', targetD=' + (target ? hypot(target.x - player.x, target.y - player.y).toFixed(2) : 'none');
+          }
+        }
+
+        report.push({
+          id: difficulty.id,
+          deaths,
+          samples: samplesPerDifficulty,
+          minForeignDistance: Number.isFinite(minForeignDistance) ? Number(minForeignDistance.toFixed(3)) : null,
+          minClearance: Number.isFinite(minClearance) ? Number(minClearance.toFixed(3)) : null,
+          minTargetHeatClearance: Number.isFinite(minTargetHeatClearance) ? Number(minTargetHeatClearance.toFixed(3)) : null,
+          worstReason,
+          worstNearest,
+          worstState
+        });
+      }
+    } finally {
+      Math.random = originalRandom;
+      difficultyIndex = previousDifficultyIndex;
+      difficulty = previousDifficulty;
+      setupWorld(true);
+    }
+
+    return report;
+  })()`);
+
+  for (const item of result) {
+    assert(item.deaths === 0, `${item.id}: startup deaths ${item.deaths}/${item.samples}; ${item.worstReason}; nearest ${item.worstNearest}; ${item.worstState}`);
+    assert(item.minForeignDistance === null || item.minForeignDistance >= 900, `${item.id}: foreign body inside 900px startup area`);
+    assert(item.minClearance === null || item.minClearance >= 0, `${item.id}: foreign body overlaps startup clearance`);
+    assert(item.minTargetHeatClearance === null || item.minTargetHeatClearance >= 900, `${item.id}: startup target heat zone is too close`);
+  }
+}
+
 function assertObjectiveHudFields() {
   const result = evaluate(`(() => {
     const samples = [];
@@ -509,6 +663,8 @@ try {
   }
   assertDifficultyInvariants();
   assertGeneratedWorld();
+  assertAudioFallbackAndRiskFeedback();
+  assertStartupSurvival();
   assertObjectiveHudFields();
   assertResponsiveUiRects();
   assertAdaptivePerformanceLimits();

@@ -73,25 +73,7 @@ function updateBodies(dt) {
     if (b.parentId) {
       const parent = byId.get(b.parentId);
       if (!parent) continue;
-      const oldX = b.x;
-      const oldY = b.y;
-      const e = b.orbitE || 0;
-      const a = b.orbitA || b.orbitR || 1;
-      const cosNu = Math.cos(b.orbitAngle);
-      const denom = Math.max(1e-4, 1 - e * e);
-      const keplerFactor = e > .01 ? Math.pow(1 + e * cosNu, 2) / Math.pow(denom, 1.5) : 1;
-      b.orbitAngle += b.orbitSpeed * keplerFactor * dt;
-      const nu = b.orbitAngle;
-      const rr = e > .01 ? a * (1 - e * e) / Math.max(.08, 1 + e * Math.cos(nu)) : a;
-      const arg = b.orbitArg || 0;
-      const cx = Math.cos(arg) * rr * Math.cos(nu) - Math.sin(arg) * rr * Math.sin(nu);
-      const cy = Math.sin(arg) * rr * Math.cos(nu) + Math.cos(arg) * rr * Math.sin(nu);
-      b.x = parent.x + cx;
-      b.y = parent.y + cy;
-      if (dt > 0) {
-        b.vx = (b.x - oldX) / dt;
-        b.vy = (b.y - oldY) / dt;
-      }
+      advanceOrbitalState(b, parent, dt);
     }
   }
 }

@@ -9,6 +9,33 @@
 const visibleBodiesScratch = [];
 const visibleBodyScoresScratch = [];
 
+function renderSafeArea() {
+  if (typeof uiSafeArea === 'function') return uiSafeArea();
+  const margin = W < 520 ? 12 : 22;
+  return {
+    left: margin,
+    top: margin,
+    right: W - margin,
+    bottom: H - margin,
+    width: Math.max(0, W - margin * 2),
+    height: Math.max(0, H - margin * 2),
+    margin
+  };
+}
+
+function clampToRenderSafeArea(x, y, pad = 0) {
+  const safe = renderSafeArea();
+  const left = safe.left + pad;
+  const right = safe.right - pad;
+  const top = safe.top + pad;
+  const bottom = safe.bottom - pad;
+  return {
+    x: clamp(x, left, Math.max(left, right)),
+    y: clamp(y, top, Math.max(top, bottom)),
+    safe
+  };
+}
+
 function draw() {
   drawBackground();
   let sx = 0;
@@ -462,24 +489,33 @@ function drawRoute() {
   ctx.setLineDash([]);
 
   if (objective && b.x > -90 && b.x < W + 90 && b.y > -90 && b.y < H + 90) {
+    const label = clampToRenderSafeArea(b.x, b.y - target.r * camera.zoom - 26, 8);
     ctx.fillStyle = `hsla(${target.hue}, 96%, 78%, .82)`;
     ctx.font = '11px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
     ctx.textAlign = 'center';
-    ctx.fillText(objective.code, b.x, b.y - target.r * camera.zoom - 26);
+    ctx.fillText(objective.code, label.x, label.y);
   }
 
   if (b.x < -70 || b.x > W + 70 || b.y < -70 || b.y > H + 70) {
     const nx = dx / d;
     const ny = dy / d;
-    const margin = 38;
-    const scale = Math.min(
-      Math.abs((W / 2 - margin) / (nx || .0001)),
-      Math.abs((H / 2 - margin) / (ny || .0001))
-    );
-    const ex = clamp(W / 2 + nx * scale, margin, W - margin);
-    const ey = clamp(H / 2 + ny * scale, margin, H - margin);
+    const safePoint = clampToRenderSafeArea(W / 2, H / 2, 18);
+    const safe = safePoint.safe;
+    const left = safe.left + 18;
+    const right = safe.right - 18;
+    const top = safe.top + 18;
+    const bottom = safe.bottom - 18;
+    const cx = clamp((left + right) / 2, left, Math.max(left, right));
+    const cy = clamp((top + bottom) / 2, top, Math.max(top, bottom));
+    const scaleX = nx > 0 ? (right - cx) / nx : (nx < 0 ? (left - cx) / nx : Infinity);
+    const scaleY = ny > 0 ? (bottom - cy) / ny : (ny < 0 ? (top - cy) / ny : Infinity);
+    const scale = Math.max(0, Math.min(scaleX, scaleY));
+    const ex = clamp(cx + nx * scale, left, Math.max(left, right));
+    const ey = clamp(cy + ny * scale, top, Math.max(top, bottom));
+    const angle = Math.atan2(ny, nx);
+    ctx.save();
     ctx.translate(ex, ey);
-    ctx.rotate(Math.atan2(ny, nx));
+    ctx.rotate(angle);
     ctx.fillStyle = `hsla(${target.hue}, 94%, 76%, .9)`;
     ctx.beginPath();
     ctx.moveTo(14, 0);
@@ -488,11 +524,12 @@ function drawRoute() {
     ctx.lineTo(-9, 7);
     ctx.closePath();
     ctx.fill();
-    ctx.rotate(-Math.atan2(ny, nx));
+    ctx.restore();
     ctx.fillStyle = 'rgba(238,246,255,.45)';
     ctx.font = '11px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
     ctx.textAlign = 'center';
-    ctx.fillText(`${objective ? objective.code + ' ' : ''}${Math.round(worldDistanceToTarget())}`, 0, 24);
+    const labelY = clamp(ey + (ey > cy ? -18 : 24), top + 8, bottom - 4);
+    ctx.fillText(`${objective ? objective.code + ' ' : ''}${Math.round(worldDistanceToTarget())}`, ex, labelY);
   }
   ctx.restore();
 }
@@ -580,9 +617,73 @@ function drawBodyFields(b, quality = renderQuality()) {
   ctx.restore();
 }
 
+function isHazardBody(b) {
+  return b.kind === 'star'
+    || b.kind === 'blackhole'
+    || b.kind === 'comet'
+    || b.family === 'neutron'
+    || b.family === 'whitedwarf';
+}
+
+function hazardScreenRadius(b, r) {
+  if (!isHazardBody(b)) return r;
+  if (b.kind === 'blackhole') return Math.max(r, 7.5);
+  if (b.kind === 'comet') return Math.max(r, 5.5);
+  return Math.max(r, b.family === 'neutron' || b.family === 'whitedwarf' ? 6.5 : 6);
+}
+
+function drawHazardContour(b, s, r) {
+  if (!isHazardBody(b)) return;
+  const pulse = Math.sin(time * 3 + b.phase) * .5;
+  ctx.save();
+  ctx.translate(s.x, s.y);
+  ctx.rotate((b.spin || .12) * time + b.phase);
+  ctx.lineWidth = b.kind === 'blackhole' ? 1.35 : 1;
+  ctx.strokeStyle = b.kind === 'blackhole'
+    ? 'rgba(246,250,255,.70)'
+    : `hsla(${b.hue}, 96%, 86%, .64)`;
+  ctx.setLineDash(b.kind === 'comet' ? [6, 4] : [2, 4]);
+  ctx.lineDashOffset = -time * (b.kind === 'blackhole' ? 20 : 14);
+  ctx.beginPath();
+  ctx.arc(0, 0, r + (b.kind === 'blackhole' ? 4.5 : 3.5) + pulse, 0, TAU);
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  if (b.kind === 'star') {
+    const ticks = b.family === 'neutron' ? 4 : 8;
+    ctx.strokeStyle = `hsla(${b.hue + 35}, 100%, 88%, .55)`;
+    for (let i = 0; i < ticks; i++) {
+      const a = i / ticks * TAU;
+      const inner = r + 5;
+      const outer = r + (i % 2 ? 10 : 13);
+      ctx.beginPath();
+      ctx.moveTo(Math.cos(a) * inner, Math.sin(a) * inner);
+      ctx.lineTo(Math.cos(a) * outer, Math.sin(a) * outer);
+      ctx.stroke();
+    }
+  } else if (b.kind === 'blackhole') {
+    ctx.strokeStyle = 'rgba(246,250,255,.42)';
+    for (let i = -1; i <= 1; i++) {
+      ctx.beginPath();
+      ctx.moveTo(-r * 2.3, i * 5 - r * .25);
+      ctx.lineTo(r * 2.3, i * 5 + r * .25);
+      ctx.stroke();
+    }
+  } else if (b.kind === 'comet') {
+    ctx.strokeStyle = `hsla(${b.hue + 28}, 96%, 88%, .55)`;
+    ctx.beginPath();
+    ctx.moveTo(-r - 4, -r - 4);
+    ctx.lineTo(r + 4, r + 4);
+    ctx.moveTo(-r - 4, r + 4);
+    ctx.lineTo(r + 4, -r - 4);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
 function drawBodyCore(b) {
   const s = worldToScreen(b.x, b.y);
-  const r = b.r * camera.zoom;
+  const r = hazardScreenRadius(b, b.r * camera.zoom);
   const pulse = 1 + Math.sin(time * 1.1 + b.phase) * .035;
 
   ctx.save();
@@ -591,6 +692,7 @@ function drawBodyCore(b) {
   else if (b.kind === 'asteroid') drawAsteroidBody(b, s, r);
   else if (b.kind === 'comet') drawCometBody(b, s, r);
   else drawPlanetBody(b, s, r, pulse);
+  drawHazardContour(b, s, r);
 
   if ((b.kind === 'star' || b.target || b.kind === 'comet') && r > 7) {
     ctx.fillStyle = `hsla(${b.hue}, 92%, 80%, ${b.target ? .78 : .34})`;
@@ -806,9 +908,12 @@ function drawPlayer() {
   }
 
   const s = worldToScreen(player.x, player.y);
-  ctx.translate(s.x, s.y);
-  ctx.rotate(player.angle);
   const scale = camera.zoom;
+  const heatFx = clamp((player.heat - .72) / .28, 0, 1);
+  const stressFx = clamp(((player.stress || 0) - .72) / .36, 0, 1);
+  ctx.translate(s.x, s.y);
+  if (stressFx > 0) ctx.translate(rnd(Math.random, -1.8, 1.8) * stressFx * scale, rnd(Math.random, -1.8, 1.8) * stressFx * scale);
+  ctx.rotate(player.angle);
 
   if (player.thrusting) {
     const flame = (10 + Math.sin(time * 45) * 2 + Math.random() * 3) * scale;
@@ -820,6 +925,33 @@ function drawPlayer() {
     ctx.lineTo(-12 * scale - flame, 4.6 * scale);
     ctx.closePath();
     ctx.fill();
+  }
+
+  if (heatFx > 0) {
+    const flicker = .68 + Math.sin(time * 18) * .18 + Math.random() * .14;
+    ctx.strokeStyle = `hsla(28, 100%, 66%, ${(.20 + heatFx * .30) * flicker})`;
+    ctx.lineWidth = 1 + heatFx * 1.4;
+    ctx.beginPath();
+    ctx.arc(0, 0, (18 + heatFx * 8) * scale, 0, TAU);
+    ctx.stroke();
+  }
+
+  if (stressFx > 0) {
+    ctx.save();
+    ctx.lineCap = 'round';
+    ctx.setLineDash([3 * scale, 5 * scale]);
+    ctx.lineDashOffset = -time * 28;
+    for (let i = 0; i < 3; i++) {
+      const arcPhase = time * (1.8 + i * .25) + i * 2.1;
+      const r = (19 + i * 4 + stressFx * 4) * scale;
+      ctx.strokeStyle = `hsla(${242 + i * 16}, 98%, ${70 + i * 4}%, ${(.12 + stressFx * .20) * (1 - i * .18)})`;
+      ctx.lineWidth = (1 + stressFx * .9) * scale;
+      ctx.beginPath();
+      ctx.arc(0, 0, r, arcPhase, arcPhase + .9 + stressFx * .7);
+      ctx.stroke();
+    }
+    ctx.setLineDash([]);
+    ctx.restore();
   }
 
   ctx.strokeStyle = `rgba(160, 232, 255, ${player.heat > .65 ? .18 + Math.sin(time * 11) * .08 : .08})`;
@@ -855,6 +987,11 @@ function drawTexts() {
   for (const f of texts) {
     const s = worldToScreen(f.x, f.y);
     const a = clamp(f.life / f.max, 0, 1);
+    ctx.lineWidth = 4;
+    ctx.strokeStyle = `rgba(1, 5, 13, ${a * .88})`;
+    ctx.shadowColor = 'rgba(0,0,0,0)';
+    ctx.shadowBlur = 0;
+    ctx.strokeText(f.text, s.x, s.y);
     ctx.fillStyle = `hsla(${f.hue}, 95%, 77%, ${a})`;
     ctx.shadowColor = `hsla(${f.hue}, 95%, 56%, ${a})`;
     ctx.shadowBlur = 16;

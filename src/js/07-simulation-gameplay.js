@@ -20,6 +20,7 @@ function update(dt) {
 }
 
 function updateGame(dt) {
+  player.startGrace = Math.max(0, (player.startGrace || 0) - dt);
   if (frame % (lowPower ? 28 : 14) === 0) {
     ensureChunksAround(player.x, player.y, lowPower ? 1 : 2);
     cleanupFarBodies();
@@ -214,6 +215,78 @@ function detectGravityAssist(g, dt) {
   }
 }
 
+function riskLevel(value) {
+  if (value >= .95) return 3;
+  if (value >= .86) return 2;
+  if (value >= .72) return 1;
+  return 0;
+}
+
+function emitHeatFeedback(dt, level) {
+  if (!level || Math.random() > dt * (level >= 3 ? 36 : 18)) return;
+  const side = rnd(Math.random, -1, 1);
+  const a = player.angle + Math.PI * .55 * side + rnd(Math.random, -.35, .35);
+  const speed = rnd(Math.random, 24, 82) * (1 + level * .18);
+  particles.push({
+    x: player.x + rnd(Math.random, -9, 9),
+    y: player.y + rnd(Math.random, -9, 9),
+    vx: player.vx * .05 + Math.cos(a) * speed,
+    vy: player.vy * .05 + Math.sin(a) * speed,
+    size: rnd(Math.random, .9, 2.2 + level * .35),
+    hue: rnd(Math.random, 18, 42),
+    life: rnd(Math.random, .18, .34),
+    max: .34,
+    drag: .90
+  });
+}
+
+function emitStressFeedback(dt, tide, level) {
+  if (!level || Math.random() > dt * (level >= 3 ? 28 : 12)) return;
+  const hue = tide.body && tide.body.hue ? clamp(tide.body.hue + 32, 235, 282) : rnd(Math.random, 238, 272);
+  particles.push({
+    x: player.x + rnd(Math.random, -15, 15),
+    y: player.y + rnd(Math.random, -15, 15),
+    vx: rnd(Math.random, -28, 28),
+    vy: rnd(Math.random, -28, 28),
+    size: rnd(Math.random, 1.2, 3.2),
+    hue,
+    life: rnd(Math.random, .18, .30),
+    max: .30,
+    drag: .88
+  });
+}
+
+function triggerRiskFeedback(heatLevel, stressLevel, rad, tide) {
+  const maxLevel = Math.max(heatLevel, stressLevel);
+  if (!maxLevel) {
+    player.lastHeatRiskLevel = 0;
+    player.lastStressRiskLevel = 0;
+    return;
+  }
+
+  const previousHeat = player.lastHeatRiskLevel || 0;
+  const previousStress = player.lastStressRiskLevel || 0;
+  const escalated = heatLevel > previousHeat || stressLevel > previousStress;
+  if (warningClock <= 0 || escalated) {
+    const heatDominant = heatLevel >= stressLevel;
+    const cue = maxLevel >= 3 ? 'critical' : (heatDominant ? 'heat' : 'stress');
+    const cueBody = heatDominant ? rad.body : tide.body;
+    soundCue(cue, cueBody, maxLevel);
+    warningClock = maxLevel >= 3 ? .95 : (maxLevel === 2 ? .78 : .62);
+    camera.shake = Math.max(camera.shake, maxLevel >= 3 ? 7 : (maxLevel === 2 ? 4 : 2));
+    if (messageTime <= .16 || (message && message.startsWith('Риск:'))) {
+      const levelText = maxLevel >= 3 ? 'критический риск' : 'Риск';
+      message = heatLevel && stressLevel
+        ? `${levelText}: перегрев и перегрузка`
+        : (heatLevel ? `${levelText}: перегрев` : `${levelText}: перегрузка`);
+      messageTime = maxLevel >= 3 ? .95 : .78;
+    }
+  }
+
+  player.lastHeatRiskLevel = heatLevel;
+  player.lastStressRiskLevel = stressLevel;
+}
+
 function updateThermalAndFuel(dt) {
   const rad = radiationAt(player.x, player.y);
   const flux = rad.flux;
@@ -227,26 +300,22 @@ function updateThermalAndFuel(dt) {
   player.heat = clamp(player.heat, 0, 1.18);
 
   const tide = tidalStressAt(player.x, player.y);
-  const targetStress = clamp(tide.stress * difficulty.stressRisk, 0, 1.28);
+  const startGraceActive = (player.startGrace || 0) > 0;
+  const targetStress = startGraceActive
+    ? clamp(tide.stress * difficulty.stressRisk, 0, .64)
+    : clamp(tide.stress * difficulty.stressRisk, 0, 1.28);
   player.stress = lerp(player.stress || 0, targetStress, 1 - Math.pow(.08, dt));
   if (player.stress > .92 && tide.body && Math.random() < dt * 16) {
     particles.push({ x: player.x + rnd(Math.random, -12, 12), y: player.y + rnd(Math.random, -12, 12), vx: rnd(Math.random, -18, 18), vy: rnd(Math.random, -18, 18), size: rnd(Math.random, 1, 2.5), hue: tide.body.hue || 255, life: .28, max: .28, drag: .92 });
   }
 
-  const heatRisk = player.heat > .72;
-  const stressRisk = player.stress > .72;
+  const heatLevel = riskLevel(player.heat);
+  const stressLevel = riskLevel(player.stress);
+  emitHeatFeedback(dt, heatLevel);
+  emitStressFeedback(dt, tide, stressLevel);
   warningClock = Math.max(0, warningClock - dt);
-  if (warningClock <= 0 && (heatRisk || stressRisk)) {
-    warningClock = .62;
-    soundCue('warn');
-    if (messageTime <= .16 || (message && message.startsWith('Риск:'))) {
-      message = heatRisk && stressRisk
-        ? 'Риск: перегрев и перегрузка'
-        : (heatRisk ? 'Риск: перегрев' : 'Риск: перегрузка');
-      messageTime = .78;
-    }
-  }
-
+  if (startGraceActive && player.stress >= 1.08) player.stress = 1.07;
+  triggerRiskFeedback(heatLevel, stressLevel, rad, tide);
   if (player.heat >= 1) endGame('Корабль перегрелся у звезды');
   if (player.stress >= 1.08) endGame('Корабль не выдержал нагрузки');
 }
@@ -344,14 +413,19 @@ function checkLagrangeNodes(dt) {
 
 function checkCollisionsAndScans(dt) {
   const now = time;
+  const startGraceActive = (player.startGrace || 0) > 0;
   for (const b of bodies) {
     const d = hypot(player.x - b.x, player.y - b.y);
     if (b.kind === 'blackhole') {
       if (d < b.event) {
+        if (startGraceActive) continue;
+        soundCue('impact', b, 3);
         endGame('Корабль ушёл за горизонт событий');
         return;
       }
     } else if (d < b.r + player.r) {
+      if (startGraceActive) continue;
+      soundCue('impact', b, b.kind === 'star' ? 3 : 2);
       endGame(b.kind === 'star' ? 'Корабль сгорел в звезде' : 'Корабль столкнулся с объектом');
       return;
     }

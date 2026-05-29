@@ -49,21 +49,28 @@ function setupWorld(preview = false) {
   homePlanet.hue = 208;
   homePlanet.r = 32;
   homePlanet.scan = 146;
-  homePlanet.orbitSpeed = Math.sqrt(homeStar.mu / Math.max(homePlanet.orbitA * homePlanet.orbitA * homePlanet.orbitA, 1)) * .92;
-  homePlanet.vx = -Math.sin(homePlanet.orbitAngle) * homePlanet.orbitA * homePlanet.orbitSpeed;
-  homePlanet.vy =  Math.cos(homePlanet.orbitAngle) * homePlanet.orbitA * homePlanet.orbitSpeed;
+  const homeOrbitDir = homePlanet.orbitSpeed < 0 ? -1 : 1;
+  homePlanet.orbitSpeed = Math.sqrt(homeStar.mu / Math.max(homePlanet.orbitA * homePlanet.orbitA * homePlanet.orbitA, 1)) * .92 * homeOrbitDir;
+  applyOrbitalState(homePlanet, homeStar);
 
-  const spawnDx = -88;
-  const spawnDy = -128;
-  const spawnR = Math.hypot(spawnDx, spawnDy);
-  const spawnTangent = Math.atan2(spawnDy, spawnDx) + Math.PI / 2;
-  const spawnSpeed = Math.sqrt((homePlanet.mu * difficulty.gravity) / Math.max(spawnR, 1)) * .86;
+  const homeDx = homePlanet.x - homeStar.x;
+  const homeDy = homePlanet.y - homeStar.y;
+  const homeInvR = 1 / Math.max(Math.hypot(homeDx, homeDy), 1);
+  const spawnRadialX = homeDx * homeInvR;
+  const spawnRadialY = homeDy * homeInvR;
+  const spawnTangentX = -spawnRadialY * homeOrbitDir;
+  const spawnTangentY = spawnRadialX * homeOrbitDir;
+  const spawnR = Math.max(900, homeStar.heatRadius - Math.hypot(homeDx, homeDy) + STARTUP_HAZARD_PADDING + 220);
+  const spawnOrbitR = Math.hypot(homeDx + spawnRadialX * spawnR, homeDy + spawnRadialY * spawnR);
+  const spawnTangent = Math.atan2(spawnTangentY, spawnTangentX);
+  const spawnSpeed = Math.sqrt((homeStar.mu * difficulty.gravity) / Math.max(spawnOrbitR, 1)) * 1.04;
+  const spawnOutwardSpeed = 72;
 
   player = {
-    x: homePlanet.x + spawnDx,
-    y: homePlanet.y + spawnDy,
-    vx: homePlanet.vx + Math.cos(spawnTangent) * spawnSpeed,
-    vy: homePlanet.vy + Math.sin(spawnTangent) * spawnSpeed,
+    x: homePlanet.x + spawnRadialX * spawnR,
+    y: homePlanet.y + spawnRadialY * spawnR,
+    vx: spawnTangentX * spawnSpeed + spawnRadialX * spawnOutwardSpeed,
+    vy: spawnTangentY * spawnSpeed + spawnRadialY * spawnOutwardSpeed,
     angle: spawnTangent,
     r: 8.5,
     fuel: 86,
@@ -82,6 +89,7 @@ function setupWorld(preview = false) {
     flowTime: 0,
     flowLevel: 0,
     nodeCooldown: 0,
+    startGrace: 1.8,
     alive: true
   };
 
@@ -90,6 +98,7 @@ function setupWorld(preview = false) {
   camera.shake = 0;
   camera.zoom = 1;
   ensureChunksAround(0, 0, lowPower ? 2 : 3);
+  cleanupStartupArea(player.x, player.y, STARTUP_CLEAR_RADIUS, true);
   chooseTarget(true);
   state = preview ? 'menu' : 'play';
 }
@@ -155,9 +164,11 @@ function routeBodyRisk(body) {
 function chooseTarget(force = false) {
   if (!player) return;
   ensureChunksAround(player.x, player.y, lowPower ? 3 : 4);
+  if (force && score === 0 && chain === 0) cleanupStartupArea(player.x, player.y, STARTUP_CLEAR_RADIUS, true);
+  const startupRoute = force && score === 0 && chain === 0;
 
   const speedAngle = Math.atan2(player.vy, player.vx);
-  const minD = (force ? 520 : 720 + Math.min(score, 45) * 7) * difficulty.targetMin;
+  const minD = (force ? 2200 : 720 + Math.min(score, 45) * 7) * difficulty.targetMin;
   const maxD = (force ? 2300 : 3100 + Math.min(score, 65) * 15) * difficulty.targetMax;
   const candidates = [];
   const sectorX = Math.floor(player.x / CHUNK);
@@ -169,6 +180,8 @@ function chooseTarget(force = false) {
     if (b.kind === 'blackhole' || b.home || b.visited) continue;
     const d = hypot(b.x - player.x, b.y - player.y);
     if (d < minD || d > maxD) continue;
+    if (startupRoute && b.kind === 'star' && d - (b.heatRadius || 0) < STARTUP_CLEAR_RADIUS) continue;
+    if (startupRoute && routeBodyRisk(b) > .58) continue;
     const a = Math.atan2(b.y - player.y, b.x - player.x);
     const forward = (Math.cos(angleDiff(speedAngle, a)) + 1) * .5;
     const rewardWeight = Math.sqrt(b.reward || 1) / 4;
@@ -188,18 +201,20 @@ function chooseTarget(force = false) {
     const fallbackSeed = hash2(sectorX * 197 + Math.floor(score / 3) + (force ? 23 : 0), sectorY * 149 + chain * 5 + routeChoice);
     const fallbackRng = mulberry32(fallbackSeed);
     const a = speedAngle + rnd(fallbackRng, -.75, .75);
-    const d = rnd(fallbackRng, 1700 * difficulty.targetMin, (3150 + score * 9) * difficulty.targetMax);
+    const d = rnd(fallbackRng, 2200 * difficulty.targetMin, (3150 + score * 9) * difficulty.targetMax);
     const tx = player.x + Math.cos(a) * d;
     const ty = player.y + Math.sin(a) * d;
     const depth = Math.floor(hypot(tx, ty) / CHUNK);
     const env = stellarEnvironmentBias(Math.floor(tx / CHUNK), Math.floor(ty / CHUNK));
-    const star = addStar(chooseStellarProfile(fallbackRng, Math.max(8, depth), env), tx, ty, fallbackRng);
+    const profile = startupRoute ? { family: 'main', class: 'K' } : chooseStellarProfile(fallbackRng, Math.max(8, depth), env);
+    const star = addStar(profile, tx, ty, fallbackRng);
     let companion = null;
     if (fallbackRng() < .28 && star.family === 'main') {
       const compEnv = clamp(env + rnd(fallbackRng, -.18, .18), -1, 1);
       companion = addCompanionStar(star, { family: 'main', class: chooseMainClass(fallbackRng, Math.max(9, depth + 1), compEnv) }, rnd(fallbackRng, 540, 920), fallbackRng() * TAU, fallbackRng);
     }
     populateSystemBodies(star, companion, fallbackRng, { minPlanets: star.family === 'neutron' ? 0 : 1, maxPlanets: 3 });
+    cleanupStartupArea(player.x, player.y, STARTUP_CLEAR_RADIUS, true);
     routeOptions = [star];
     routeChoice = 0;
     setTarget(star, true);
